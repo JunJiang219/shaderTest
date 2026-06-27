@@ -1,0 +1,77 @@
+// eff-template.effect —— 2D 精灵最小模板
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: sprite-vs:vert      # 顶点着色器入口
+      frag: sprite-fs:frag      # 片元着色器入口
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one_minus_src_alpha
+          blendSrcAlpha: src_alpha
+          blendDstAlpha: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      properties:
+        # 暴露一个颜色到材质面板，默认白色
+        mainColor: { value: [1, 1, 1, 1], editor: { type: color } }
+}%
+
+CCProgram sprite-vs %{
+  precision highp float;
+  #include <builtin/uniforms/cc-global>          // 拿到全局矩阵/时间
+  #if USE_LOCAL
+    #include <builtin/uniforms/cc-local>         // 拿到模型矩阵 cc_matWorld
+  #endif
+
+  // 顶点输入（来自精灵网格）
+  in vec3 a_position;   // 顶点位置
+  in vec2 a_texCoord;   // UV
+  in vec4 a_color;      // 顶点颜色（精灵的 color 属性）
+
+  // 传给片元着色器的数据
+  out vec2 uv0;
+  out vec4 color;
+
+  vec4 vert () {
+    vec4 pos = vec4(a_position, 1.0);
+    #if USE_LOCAL
+      pos = cc_matWorld * pos;                   // 模型 → 世界
+    #endif
+    pos = cc_matViewProj * pos;                  // 世界 → 裁剪空间
+
+    uv0 = a_texCoord;                            // UV 传下去
+    color = a_color;                             // 顶点色传下去
+    return pos;                                  // 返回最终位置
+  }
+}%
+
+CCProgram sprite-fs %{
+  precision highp float;
+  #include <builtin/internal/embedded-alpha>     // 处理图集的 alpha
+  #include <builtin/internal/alpha-test>         // 提供 ALPHA_TEST 宏
+
+  in vec2 uv0;
+  in vec4 color;
+
+  // 精灵贴图：Cocos 2D 约定用 cc_spriteTexture，引擎会自动把 Sprite 的图喂进来
+  #pragma builtin(local)
+  layout(set = 2, binding = 12) uniform sampler2D cc_spriteTexture;
+
+  // 接收材质面板上的 mainColor 参数
+  uniform Constant {
+    vec4 mainColor;
+  };
+
+  vec4 frag () {
+    vec4 o = texture(cc_spriteTexture, uv0);     // 1. 采样贴图颜色
+    o *= color;                                  // 2. 乘上顶点色
+    o *= mainColor;                              // 3. 乘上面板可调颜色
+    ALPHA_TEST(o);                               // 4. alpha 裁剪（透明像素丢弃）
+    return o;                                    // 5. 输出最终颜色
+  }
+}%
