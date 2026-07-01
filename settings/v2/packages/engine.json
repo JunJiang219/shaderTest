@@ -165,7 +165,7 @@
             }
           },
           "dragon-bones": {
-            "_value": true
+            "_value": false
           },
           "marionette": {
             "_value": false
@@ -187,6 +187,9 @@
             "_value": false
           }
         },
+        "flags": {
+          "LOAD_SPINE_MANUALLY": false
+        },
         "includeModules": [
           "2d",
           "affine-transform",
@@ -194,7 +197,6 @@
           "audio",
           "base",
           "custom-pipeline",
-          "dragon-bones",
           "gfx-webgl",
           "gfx-webgl2",
           "graphics",
@@ -214,8 +216,7 @@
         "noDeprecatedFeatures": {
           "value": false,
           "version": ""
-        },
-        "flags": {}
+        }
       }
     },
     "globalConfigKey": "defaultConfig"
