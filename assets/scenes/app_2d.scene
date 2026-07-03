@@ -176,7 +176,7 @@
     "_priority": 0,
     "_fov": 45,
     "_fovAxis": 0,
-    "_orthoHeight": 432.62839879154075,
+    "_orthoHeight": 513.8368580060422,
     "_near": 0,
     "_far": 2000,
     "_color": {
@@ -289,7 +289,7 @@
     "_enabled": true,
     "__prefab": null,
     "_customMaterial": {
-      "__uuid__": "200c536a-f06a-4745-bb21-a355da05aab6",
+      "__uuid__": "7dd1bca3-e115-43fb-920b-42ce31b5437d",
       "__expectedType__": "cc.Material"
     },
     "_srcBlendFactor": 2,
@@ -307,7 +307,7 @@
     },
     "_type": 0,
     "_fillType": 0,
-    "_sizeMode": 0,
+    "_sizeMode": 1,
     "_fillCenter": {
       "__type__": "cc.Vec2",
       "x": 0,
@@ -315,7 +315,7 @@
     },
     "_fillStart": 0,
     "_fillRange": 0,
-    "_isTrimmedMode": false,
+    "_isTrimmedMode": true,
     "_useGrayscale": false,
     "_atlas": null,
     "_id": "31jesA4WRAL7xTVKZ+1+qD"
@@ -398,6 +398,9 @@
     },
     "_enabled": true,
     "__prefab": null,
+    "hitNode": {
+      "__id__": 5
+    },
     "_id": "76CNmZ2eFCAbu/eXD8wusp"
   },
   {
