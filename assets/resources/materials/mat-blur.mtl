@@ -5,7 +5,7 @@
   "__editorExtras__": {},
   "_native": "",
   "_effectAsset": {
-    "__uuid__": "125c1b58-9632-4a6a-a8a7-e95fedde5d92",
+    "__uuid__": "f00551f2-9bb5-47df-ae69-cc9b745d6eec",
     "__expectedType__": "cc.EffectAsset"
   },
   "_techIdx": 0,
@@ -25,13 +25,7 @@
   ],
   "_props": [
     {
-      "tintColor": {
-        "__type__": "cc.Color",
-        "r": 255,
-        "g": 255,
-        "b": 255,
-        "a": 255
-      }
+      "blurRadius": 3
     }
   ]
 }

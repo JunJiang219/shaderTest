@@ -1,0 +1,251 @@
+// Slots 中奖线与中奖框：所有几何参数均使用当前 UI 节点的本地像素坐标。
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: slots-win-vs:vert
+      frag: slots-win-fs:frag
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
+      blendState:
+        targets:
+        - blend: true
+          # 片元着色器输出预乘 Alpha，透明边缘叠加时不会产生黑边。
+          blendSrc: one
+          blendDst: one_minus_src_alpha
+          blendSrcAlpha: one
+          blendDstAlpha: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      properties:
+        lineColor: { value: [1, 0.78, 0.12, 1], editor: { type: color } }
+        frameColor: { value: [1, 0.3, 0.08, 1], editor: { type: color } }
+        lineTexture: { value: white }
+        frameTexture: { value: white }
+}%
+
+CCProgram slots-win-vs %{
+  precision highp float;
+
+  #include <builtin/uniforms/cc-global>
+  #if USE_LOCAL
+    #include <builtin/uniforms/cc-local>
+  #endif
+
+  in vec3 a_position;
+  in vec2 a_texCoord;
+  in vec4 a_color;
+
+  out vec2 v_uv;
+  out vec4 v_color;
+
+  vec4 vert () {
+    vec4 position = vec4(a_position, 1.0);
+    v_uv = a_texCoord;
+    v_color = a_color;
+
+    #if USE_LOCAL
+      position = cc_matWorld * position;
+    #endif
+    return cc_matViewProj * position;
+  }
+}%
+
+CCProgram slots-win-fs %{
+  #pragma extension([GL_OES_standard_derivatives, __VERSION__ < 300])
+
+  precision highp float;
+
+  // Creator 3.8.x 要求自定义 uniform 数组长度直接写数字，不能使用宏。
+
+  in vec2 v_uv;
+  in vec4 v_color;
+
+  #pragma builtin(local)
+  layout(set = 2, binding = 12) uniform sampler2D cc_spriteTexture;
+  uniform sampler2D lineTexture;
+  uniform sampler2D frameTexture;
+
+  uniform SlotsWinConstant {
+    // x=线段数，y=框数，z=绘制模式，w=线是否在框上层。
+    vec4 drawConfig;
+    // x=线宽，y=框宽，z=抗锯齿柔和度，w=框内是否绘制线。
+    vec4 styleConfig;
+    // x=线用纹理，y=框用纹理，z=线纹理横向重复长度，w=保留。
+    vec4 textureConfig;
+    // x=本地左边界，y=本地下边界，z=节点宽，w=节点高。
+    vec4 localBounds;
+    vec4 lineColor;
+    vec4 frameColor;
+    // 每段为 (起点x, 起点y, 终点x, 终点y)。
+    vec4 lineSegments[16];
+    // x=该段起点距整条折线起点的距离，其余分量保留。
+    vec4 lineSegmentInfo[16];
+    // 矩形：(中心x, 中心y, 半宽, 半高)；圆：(中心x, 中心y, 半径, -1)。
+    vec4 frameData[16];
+  };
+
+  struct LineResult {
+    float distanceToCenter;
+    vec2 textureUV;
+  };
+
+  struct FrameResult {
+    float outlineDistance;
+    float shapeDistance;
+    vec2 textureUV;
+  };
+
+  // 点到带圆头线段的距离，同时返回线段内的投影比例。
+  float segmentDistance(vec2 point, vec2 start, vec2 end, out float ratio) {
+    vec2 segment = end - start;
+    float lengthSquared = max(dot(segment, segment), 0.0001);
+    ratio = clamp(dot(point - start, segment) / lengthSquared, 0.0, 1.0);
+    return length(point - (start + segment * ratio));
+  }
+
+  LineResult findNearestLine(vec2 point) {
+    LineResult result;
+    result.distanceToCenter = 1000000.0;
+    result.textureUV = vec2(0.0, 0.5);
+
+    float repeatLength = max(textureConfig.z, 1.0);
+    for (int i = 0; i < 16; ++i) {
+      if (float(i) >= drawConfig.x) {
+        break;
+      }
+
+      vec2 start = lineSegments[i].xy;
+      vec2 end = lineSegments[i].zw;
+      vec2 segment = end - start;
+      float segmentLength = length(segment);
+      float ratio = 0.0;
+      float distanceToSegment = segmentDistance(point, start, end, ratio);
+
+      if (distanceToSegment < result.distanceToCenter) {
+        vec2 direction = segment / max(segmentLength, 0.0001);
+        float side = dot(point - (start + segment * ratio), vec2(-direction.y, direction.x));
+        float width = max(styleConfig.x, 0.0001);
+        result.distanceToCenter = distanceToSegment;
+        float distanceFromLineStart = lineSegmentInfo[i].x + ratio * segmentLength;
+        result.textureUV = vec2(fract(distanceFromLineStart / repeatLength), side / width + 0.5);
+      }
+    }
+    return result;
+  }
+
+  // 标准矩形有符号距离：负数在内部，正数在外部。
+  float rectangleDistance(vec2 point, vec2 halfSize) {
+    vec2 delta = abs(point) - halfSize;
+    return length(max(delta, vec2(0.0))) + min(max(delta.x, delta.y), 0.0);
+  }
+
+  FrameResult findNearestFrame(vec2 point) {
+    FrameResult result;
+    result.outlineDistance = 1000000.0;
+    result.shapeDistance = 1000000.0;
+    result.textureUV = vec2(0.5);
+
+    float halfFrameWidth = max(styleConfig.y * 0.5, 0.0001);
+    for (int i = 0; i < 16; ++i) {
+      if (float(i) >= drawConfig.y) {
+        break;
+      }
+
+      vec4 data = frameData[i];
+      vec2 offset = point - data.xy;
+      float signedDistance = 0.0;
+      vec2 shapeUV = vec2(0.5);
+
+      if (data.w < 0.0) {
+        float radius = max(data.z, 0.0001);
+        signedDistance = length(offset) - radius;
+        shapeUV = offset / (radius * 2.0) + 0.5;
+      } else {
+        vec2 halfSize = max(data.zw, vec2(0.0001));
+        signedDistance = rectangleDistance(offset, halfSize);
+        shapeUV = offset / (halfSize * 2.0) + 0.5;
+      }
+
+      float outlineDistance = abs(signedDistance) - halfFrameWidth;
+      if (outlineDistance < result.outlineDistance) {
+        result.outlineDistance = outlineDistance;
+        result.textureUV = shapeUV;
+      }
+      result.shapeDistance = min(result.shapeDistance, signedDistance);
+    }
+    return result;
+  }
+
+  // 没有导数扩展时仍保留一个本地像素宽度的柔化边缘。
+  float antialiasWidth(float distanceValue) {
+    float width = max(styleConfig.z, 0.5);
+    #if __VERSION__ < 300
+      #ifdef GL_OES_standard_derivatives
+        width *= max(fwidth(distanceValue), 0.5);
+      #endif
+    #else
+      width *= max(fwidth(distanceValue), 0.5);
+    #endif
+    return width;
+  }
+
+  float coverageFromDistance(float distanceValue) {
+    float aa = antialiasWidth(distanceValue);
+    return 1.0 - smoothstep(-aa, aa, distanceValue);
+  }
+
+  // 将普通颜色转成预乘 Alpha，便于同一像素内正确合并线与框。
+  vec4 makeLayer(vec4 paint, float coverage) {
+    float alpha = paint.a * clamp(coverage, 0.0, 1.0);
+    return vec4(paint.rgb * alpha, alpha);
+  }
+
+  vec4 putOver(vec4 top, vec4 bottom) {
+    return top + bottom * (1.0 - top.a);
+  }
+
+  vec4 frag () {
+    // Sprite 的普通组装器提交的是世界坐标，因此用全尺寸白图 UV 还原节点本地坐标。
+    // Cocos 纹理 UV 的 y 轴向下，而 UI 本地坐标 y 轴向上，这里需要翻转 y。
+    vec2 localPosition = localBounds.xy
+      + vec2(v_uv.x, 1.0 - v_uv.y) * localBounds.zw;
+    LineResult line = findNearestLine(localPosition);
+    FrameResult frame = findNearestFrame(localPosition);
+
+    float lineDistance = line.distanceToCenter - max(styleConfig.x * 0.5, 0.0001);
+    float lineCoverage = coverageFromDistance(lineDistance);
+    float frameCoverage = coverageFromDistance(frame.outlineDistance);
+    lineCoverage *= step(0.0001, styleConfig.x);
+    frameCoverage *= step(0.0001, styleConfig.y);
+
+    // drawConfig.z：0=只画线，1=只画框，2=同时绘制。
+    bool drawLine = drawConfig.z < 0.5 || drawConfig.z > 1.5;
+    bool drawFrame = drawConfig.z > 0.5;
+    lineCoverage *= drawLine ? 1.0 : 0.0;
+    frameCoverage *= drawFrame ? 1.0 : 0.0;
+
+    // 关闭“框内绘制线”时，连同抗锯齿边缘一起平滑裁掉框内部线段。
+    if (styleConfig.w < 0.5 && drawConfig.y > 0.5) {
+      float shapeAA = antialiasWidth(frame.shapeDistance);
+      float outsideFrame = smoothstep(-shapeAA, shapeAA, frame.shapeDistance);
+      lineCoverage *= outsideFrame;
+    }
+
+    vec4 sampledLine = textureConfig.x > 0.5 ? texture(lineTexture, line.textureUV) : vec4(1.0);
+    vec4 sampledFrame = textureConfig.y > 0.5 ? texture(frameTexture, frame.textureUV) : vec4(1.0);
+    vec4 lineLayer = makeLayer(sampledLine * lineColor, lineCoverage);
+    vec4 frameLayer = makeLayer(sampledFrame * frameColor, frameCoverage);
+
+    vec4 outputColor = drawConfig.w > 0.5
+      ? putOver(lineLayer, frameLayer)
+      : putOver(frameLayer, lineLayer);
+
+    // Sprite 自身只提供绘制四边形和节点透明度；默认由脚本补一张白图。
+    vec4 spriteSample = texture(cc_spriteTexture, v_uv);
+    float nodeAlpha = spriteSample.a * v_color.a;
+    outputColor.rgb *= v_color.rgb * nodeAlpha;
+    outputColor.a *= nodeAlpha;
+    return outputColor;
+  }
+}%

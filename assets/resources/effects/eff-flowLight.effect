@@ -18,8 +18,8 @@ CCEffect %{
         cullMode: none
       properties:
         shineColor: { value: [1, 1, 1, 1], editor: { type: color } }
-        shineWidth: { value: 0.3, editor: { slide: true, range: [0.01, 1], step: 0.01 } }
-        shineSpeed: { value: 0.5, editor: { slide: true, range: [0, 3], step: 0.01 } }
+        shineWidth: { value: 30, editor: { slide: true, range: [1, 300], step: 1 } }
+        shineSpeed: { value: 300, editor: { slide: true, range: [0, 1000], step: 1 } }
 }%
 
 CCProgram sprite-vs %{
@@ -52,6 +52,11 @@ CCProgram sprite-vs %{
 }%
 
 CCProgram sprite-fs %{
+  // WebGL 1 需要显式启用导数扩展；WebGL 2 / 原生平台使用内置导数函数。
+  #if __VERSION__ < 300
+    #extension GL_OES_standard_derivatives : enable
+  #endif
+
   precision highp float;
   #include <builtin/internal/embedded-alpha>     // 处理图集的 alpha
   #include <builtin/internal/alpha-test>         // 提供 ALPHA_TEST 宏
@@ -67,18 +72,28 @@ CCProgram sprite-fs %{
   // 接收材质面板上的 mainColor 参数
   uniform Constant {
     vec4 shineColor;   // 流光颜色（通常偏白）
-    float shineWidth;  // 流光带宽度
-    float shineSpeed;  // 移动速度
+    float shineWidth;  // 流光从中心到边缘的宽度，单位：屏幕像素
+    float shineSpeed;  // 流光沿法线方向的移动速度，单位：屏幕像素/秒
   };
+
+  // 计算对角线坐标每跨过一个屏幕像素会变化多少 UV。
+  // 使用屏幕导数后，材质不需要额外传入 Sprite 或纹理尺寸。
+  float getDiagonalUvPerPixel(float diagonalUv) {
+    vec2 uvGradient = vec2(dFdx(diagonalUv), dFdy(diagonalUv));
+    return max(length(uvGradient), 0.000001);
+  }
 
   vec4 frag () {
     vec4 o = texture(cc_spriteTexture, uv0) * color;
     // 沿对角线的位置，0~2 之间
     float d = uv0.x + uv0.y;
-    // 让亮带中心随时间从 0 移动到 2，用 fract 循环
-    float center = fract(cc_time.x * shineSpeed) * 2.0;
-    // 距离亮带中心越近越亮（smoothstep 做柔边三角形）
-    float band = smoothstep(shineWidth, 0.0, abs(d - center));
+    float uvPerPixel = getDiagonalUvPerPixel(d);
+    float travelDistancePx = 2.0 / uvPerPixel;
+    float positionPx = d / uvPerPixel;
+    // 亮带以 shineSpeed 像素/秒移动，走完当前 Sprite 后循环。
+    float centerPx = mod(cc_time.x * shineSpeed, travelDistancePx);
+    // 在像素空间计算距离，使 shineWidth 不再受 Sprite 尺寸影响。
+    float band = smoothstep(shineWidth, 0.0, abs(positionPx - centerPx));
     // 叠加流光（只在不透明区域加，乘 o.a）
     o.rgb += shineColor.rgb * band * o.a;
     ALPHA_TEST(o);

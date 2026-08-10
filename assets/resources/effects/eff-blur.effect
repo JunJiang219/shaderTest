@@ -1,0 +1,111 @@
+// eff-blur.effect —— 适用于 Cocos Creator 3.8 的 2D Sprite 高斯模糊
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: sprite-vs:vert
+      frag: sprite-fs:frag
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one_minus_src_alpha
+          blendSrcAlpha: src_alpha
+          blendDstAlpha: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      properties:
+        # 相邻采样点与当前像素的距离，单位为屏幕像素。
+        blurRadius: { value: 3, editor: { slide: true, range: [0, 10], step: 0.1 } }
+}%
+
+CCProgram sprite-vs %{
+  precision highp float;
+  #include <builtin/uniforms/cc-global>
+  #if USE_LOCAL
+    #include <builtin/uniforms/cc-local>
+  #endif
+
+  in vec3 a_position;
+  in vec2 a_texCoord;
+  in vec4 a_color;
+
+  out vec2 uv0;
+  out vec4 color;
+
+  vec4 vert () {
+    vec4 pos = vec4(a_position, 1.0);
+    #if USE_LOCAL
+      pos = cc_matWorld * pos;
+    #endif
+
+    uv0 = a_texCoord;
+    color = a_color;
+    return cc_matViewProj * pos;
+  }
+}%
+
+CCProgram sprite-fs %{
+  // WebGL 1 需要显式启用屏幕导数扩展。
+  #if __VERSION__ < 300
+    #extension GL_OES_standard_derivatives : enable
+  #endif
+
+  precision highp float;
+  #include <builtin/internal/embedded-alpha>
+  #include <builtin/internal/alpha-test>
+
+  in vec2 uv0;
+  in vec4 color;
+
+  #pragma builtin(local)
+  layout(set = 2, binding = 12) uniform sampler2D cc_spriteTexture;
+
+  uniform Constant {
+    float blurRadius; // 模糊采样半径，单位：屏幕像素
+  };
+
+  // 先预乘透明度，避免透明图片的边缘在模糊后出现黑边。
+  vec4 samplePremultiplied(vec2 uv) {
+    vec4 sampleColor = texture(cc_spriteTexture, uv);
+    sampleColor.rgb *= sampleColor.a;
+    return sampleColor;
+  }
+
+  // 3x3 高斯核：中心、十字和四角的权重分别为 4、2、1。
+  vec4 gaussianBlur(vec2 uv, vec2 offsetX, vec2 offsetY) {
+    vec4 result = samplePremultiplied(uv) * 0.25;
+
+    result += samplePremultiplied(uv + offsetX) * 0.125;
+    result += samplePremultiplied(uv - offsetX) * 0.125;
+    result += samplePremultiplied(uv + offsetY) * 0.125;
+    result += samplePremultiplied(uv - offsetY) * 0.125;
+
+    result += samplePremultiplied(uv + offsetX + offsetY) * 0.0625;
+    result += samplePremultiplied(uv + offsetX - offsetY) * 0.0625;
+    result += samplePremultiplied(uv - offsetX + offsetY) * 0.0625;
+    result += samplePremultiplied(uv - offsetX - offsetY) * 0.0625;
+
+    return result;
+  }
+
+  vec4 frag () {
+    // dFdx/dFdy 给出一个屏幕像素在纹理 UV 中对应的偏移。
+    vec2 offsetX = dFdx(uv0) * blurRadius;
+    vec2 offsetY = dFdy(uv0) * blurRadius;
+    vec4 o = gaussianBlur(uv0, offsetX, offsetY);
+
+    // 采样累加完成后还原非预乘颜色，继续使用 Sprite 的普通透明混合。
+    if (o.a > 0.0001) {
+      o.rgb /= o.a;
+    } else {
+      o.rgb = vec3(0.0);
+    }
+
+    o *= color;
+    ALPHA_TEST(o);
+    return o;
+  }
+}%

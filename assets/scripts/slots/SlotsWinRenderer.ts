@@ -1,0 +1,558 @@
+import {
+    _decorator,
+    builtinResMgr,
+    CCObject,
+    Color,
+    Component,
+    EffectAsset,
+    Enum,
+    error,
+    Material,
+    Node,
+    resources,
+    Sprite,
+    SpriteFrame,
+    Texture2D,
+    UITransform,
+    Vec2,
+    Vec4,
+} from 'cc';
+
+const { ccclass, executeInEditMode, property, requireComponent } = _decorator;
+
+/** 每个 GPU 批次的容量；总数据量不受此值限制，组件会自动拆批。 */
+const SEGMENTS_PER_BATCH = 16;
+const FRAMES_PER_BATCH = 16;
+const DEFAULT_EFFECT_PATH = 'effects/slots-win-line-frame';
+const BATCH_NODE_NAME = '__slots_win_batch__';
+const CLIP_EPSILON = 0.00001;
+
+export enum SlotsWinDrawMode {
+    LINE_ONLY = 0,
+    FRAME_ONLY = 1,
+    LINE_AND_FRAME = 2,
+}
+
+export enum SlotsWinLayerOrder {
+    FRAME_ABOVE_LINE = 0,
+    LINE_ABOVE_FRAME = 1,
+}
+
+export enum SlotsWinFrameShape {
+    RECTANGLE = 0,
+    CIRCLE = 1,
+}
+
+/** 一个中奖框。position 是相对 SlotsWinRenderer 节点锚点的本地坐标。 */
+@ccclass('SlotsWinFrameConfig')
+export class SlotsWinFrameConfig {
+    @property({ type: Enum(SlotsWinFrameShape), tooltip: '矩形或圆形' })
+    shape: SlotsWinFrameShape = SlotsWinFrameShape.RECTANGLE;
+
+    @property({ tooltip: '框中心的节点本地坐标（像素）' })
+    position = new Vec2();
+
+    @property({ min: 0, tooltip: '矩形宽度（像素），圆形时忽略' })
+    width = 100;
+
+    @property({ min: 0, tooltip: '矩形高度（像素），圆形时忽略' })
+    height = 100;
+
+    @property({ min: 0, tooltip: '圆形半径（像素），矩形时忽略' })
+    radius = 50;
+}
+
+interface LineSegmentData {
+    start: Vec2;
+    end: Vec2;
+    /** 保持裁剪前的累计长度，使纹理跨批次、跨裁剪缺口仍连续。 */
+    distanceFromLineStart: number;
+}
+
+interface ClipInterval {
+    start: number;
+    end: number;
+}
+
+interface LineBatch {
+    kind: 'line';
+    segments: LineSegmentData[];
+}
+
+interface FrameBatch {
+    kind: 'frame';
+    frames: SlotsWinFrameConfig[];
+}
+
+type RenderBatch = LineBatch | FrameBatch;
+
+/**
+ * Slots 中奖线/框渲染器。
+ * 挂在一个有 UITransform 的专用节点上，节点尺寸应覆盖整个中奖区域。
+ */
+@ccclass('SlotsWinRenderer')
+@executeInEditMode(true)
+@requireComponent(Sprite)
+export class SlotsWinRenderer extends Component {
+    @property({ type: EffectAsset, tooltip: '可不填；运行时会从 resources/effects 自动加载默认 Effect' })
+    effectAsset: EffectAsset | null = null;
+
+    @property({ type: Enum(SlotsWinDrawMode), tooltip: '只画线、只画框，或两者都画' })
+    drawMode: SlotsWinDrawMode = SlotsWinDrawMode.LINE_AND_FRAME;
+
+    @property({ type: Enum(SlotsWinLayerOrder), tooltip: '线和框重叠时谁显示在上面' })
+    layerOrder: SlotsWinLayerOrder = SlotsWinLayerOrder.FRAME_ABOVE_LINE;
+
+    @property({ type: [Vec2], tooltip: '折线节点的本地坐标，按数组顺序依次连接；总数不设上限' })
+    linePoints: Vec2[] = [];
+
+    @property({ min: 0, tooltip: '中奖线宽度（像素）' })
+    lineWidth = 8;
+
+    @property({ tooltip: '中奖线纯色；使用纹理时作为纹理染色' })
+    lineColor = new Color(255, 200, 31, 255);
+
+    @property({ tooltip: '中奖线是否使用纹理' })
+    useLineTexture = false;
+
+    @property({ type: Texture2D, tooltip: '中奖线纹理；为空时使用白色纹理' })
+    lineTexture: Texture2D | null = null;
+
+    @property({ min: 1, tooltip: '中奖线纹理沿线方向每多少像素重复一次' })
+    lineTextureRepeat = 128;
+
+    @property({ type: [SlotsWinFrameConfig], tooltip: '矩形框和圆形框列表；总数不设上限' })
+    frames: SlotsWinFrameConfig[] = [];
+
+    @property({ min: 0, tooltip: '中奖框描边宽度（像素）' })
+    frameWidth = 8;
+
+    @property({ tooltip: '中奖框纯色；使用纹理时作为纹理染色' })
+    frameColor = new Color(255, 77, 20, 255);
+
+    @property({ tooltip: '中奖框是否使用纹理' })
+    useFrameTexture = false;
+
+    @property({ type: Texture2D, tooltip: '中奖框纹理；为空时使用白色纹理' })
+    frameTexture: Texture2D | null = null;
+
+    @property({ tooltip: '中奖线经过中奖框内部时，是否继续绘制该段线' })
+    drawLineInsideFrames = true;
+
+    @property({ min: 0.5, max: 3, step: 0.1, tooltip: '边缘柔和度，通常保持 1 即可' })
+    antialiasSoftness = 1;
+
+    private _loadingEffect = false;
+    private _ownedSpriteFrame: SpriteFrame | null = null;
+    private readonly _batchNodes: Node[] = [];
+    private readonly _batchMaterials: Material[] = [];
+
+    protected onLoad(): void {
+        this.ensureSpriteFrame(this.getComponent(Sprite));
+        this.ensureEffect();
+    }
+
+    protected onEnable(): void {
+        this.node.on(Node.EventType.SIZE_CHANGED, this.syncNow, this);
+        this.ensureSpriteFrame(this.getComponent(Sprite));
+        this.ensureEffect();
+        this.syncNow();
+    }
+
+    protected onDisable(): void {
+        this.node.off(Node.EventType.SIZE_CHANGED, this.syncNow, this);
+    }
+
+    protected onDestroy(): void {
+        this.node.off(Node.EventType.SIZE_CHANGED, this.syncNow, this);
+        this.clearBatches();
+        this._ownedSpriteFrame?.destroy();
+        this._ownedSpriteFrame = null;
+    }
+
+    /** Inspector 中修改配置后，编辑器会立即刷新预览。 */
+    protected onValidate(): void {
+        this.ensureSpriteFrame(this.getComponent(Sprite));
+        this.ensureEffect();
+        this.syncNow();
+    }
+
+    /** 运行时替换单条中奖线的本地坐标点，点数不设上限。 */
+    public setLinePoints(points: ReadonlyArray<Vec2>): void {
+        this.linePoints = points.map((point) => point.clone());
+        this.syncNow();
+    }
+
+    /** 运行时替换中奖框列表，框数不设上限。 */
+    public setFrames(frames: ReadonlyArray<SlotsWinFrameConfig>): void {
+        this.frames = frames.slice();
+        this.syncNow();
+    }
+
+    /** 修改任意公开配置后调用，组件会重新裁剪并自动生成所需批次。 */
+    public syncNow(): void {
+        if (!this.effectAsset || !this.isValid) {
+            return;
+        }
+        this.rebuildBatches(this.createRenderBatches());
+    }
+
+    private ensureEffect(): void {
+        if (this.effectAsset || this._loadingEffect) {
+            return;
+        }
+
+        // effect 位于 resources 内，未手动绑定时也能在运行时正常工作。
+        this._loadingEffect = true;
+        resources.load(DEFAULT_EFFECT_PATH, EffectAsset, (loadError, asset) => {
+            this._loadingEffect = false;
+            if (!this.isValid) {
+                return;
+            }
+            if (loadError || !asset) {
+                error(`[SlotsWinRenderer] 无法加载 ${DEFAULT_EFFECT_PATH}.effect`, loadError);
+                return;
+            }
+            this.effectAsset = asset;
+            this.syncNow();
+        });
+    }
+
+    private createRenderBatches(): RenderBatch[] {
+        const lineBatches = this.shouldDrawLine()
+            ? this.chunkSegments(this.buildVisibleSegments())
+            : [];
+        const frameBatches = this.shouldDrawFrame()
+            ? this.chunkFrames(this.frames)
+            : [];
+
+        return this.layerOrder === SlotsWinLayerOrder.LINE_ABOVE_FRAME
+            ? [...frameBatches, ...lineBatches]
+            : [...lineBatches, ...frameBatches];
+    }
+
+    private shouldDrawLine(): boolean {
+        return this.drawMode !== SlotsWinDrawMode.FRAME_ONLY && this.linePoints.length >= 2;
+    }
+
+    private shouldDrawFrame(): boolean {
+        return this.drawMode !== SlotsWinDrawMode.LINE_ONLY && this.frames.length > 0;
+    }
+
+    private buildVisibleSegments(): LineSegmentData[] {
+        const result: LineSegmentData[] = [];
+        let traveled = 0;
+
+        for (let index = 0; index < this.linePoints.length - 1; index++) {
+            const start = this.linePoints[index];
+            const end = this.linePoints[index + 1];
+            const segmentLength = Vec2.distance(start, end);
+            if (segmentLength <= CLIP_EPSILON) {
+                continue;
+            }
+
+            const visibleIntervals = this.drawLineInsideFrames
+                ? [{ start: 0, end: 1 }]
+                : this.findOutsideIntervals(start, end);
+            for (const interval of visibleIntervals) {
+                result.push({
+                    start: Vec2.lerp(new Vec2(), start, end, interval.start),
+                    end: Vec2.lerp(new Vec2(), start, end, interval.end),
+                    distanceFromLineStart: traveled + segmentLength * interval.start,
+                });
+            }
+            traveled += segmentLength;
+        }
+        return result;
+    }
+
+    /** 求线段位于所有框外部的区间；框会按半个线宽外扩，避免圆头重新伸入框内。 */
+    private findOutsideIntervals(start: Vec2, end: Vec2): ClipInterval[] {
+        const insideIntervals: ClipInterval[] = [];
+        const padding = Math.max(this.lineWidth, 0) * 0.5;
+
+        for (const frame of this.frames) {
+            const interval = frame.shape === SlotsWinFrameShape.CIRCLE
+                ? this.intersectCircle(start, end, frame, padding)
+                : this.intersectRectangle(start, end, frame, padding);
+            if (interval) {
+                insideIntervals.push(interval);
+            }
+        }
+        return this.invertIntervals(this.mergeIntervals(insideIntervals));
+    }
+
+    private intersectCircle(
+        start: Vec2,
+        end: Vec2,
+        frame: SlotsWinFrameConfig,
+        padding: number,
+    ): ClipInterval | null {
+        const direction = Vec2.subtract(new Vec2(), end, start);
+        const fromCenter = Vec2.subtract(new Vec2(), start, frame.position);
+        const radius = Math.max(frame.radius, 0) + padding;
+        const a = Vec2.dot(direction, direction);
+        const b = 2 * Vec2.dot(fromCenter, direction);
+        const c = Vec2.dot(fromCenter, fromCenter) - radius * radius;
+        const discriminant = b * b - 4 * a * c;
+
+        if (discriminant < 0 || a <= CLIP_EPSILON) {
+            return c <= 0 ? { start: 0, end: 1 } : null;
+        }
+        const root = Math.sqrt(discriminant);
+        const first = (-b - root) / (2 * a);
+        const second = (-b + root) / (2 * a);
+        return this.clampInterval(first, second);
+    }
+
+    /** Liang-Barsky 线段/AABB 相交，返回处于矩形内部的参数区间。 */
+    private intersectRectangle(
+        start: Vec2,
+        end: Vec2,
+        frame: SlotsWinFrameConfig,
+        padding: number,
+    ): ClipInterval | null {
+        const halfWidth = Math.max(frame.width, 0) * 0.5 + padding;
+        const halfHeight = Math.max(frame.height, 0) * 0.5 + padding;
+        const minX = frame.position.x - halfWidth;
+        const maxX = frame.position.x + halfWidth;
+        const minY = frame.position.y - halfHeight;
+        const maxY = frame.position.y + halfHeight;
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        let enter = 0;
+        let leave = 1;
+
+        const clips: ReadonlyArray<readonly [number, number]> = [
+            [-dx, start.x - minX],
+            [dx, maxX - start.x],
+            [-dy, start.y - minY],
+            [dy, maxY - start.y],
+        ];
+        for (const [normal, distance] of clips) {
+            if (Math.abs(normal) <= CLIP_EPSILON) {
+                if (distance < 0) {
+                    return null;
+                }
+                continue;
+            }
+            const ratio = distance / normal;
+            if (normal < 0) {
+                enter = Math.max(enter, ratio);
+            } else {
+                leave = Math.min(leave, ratio);
+            }
+            if (enter > leave) {
+                return null;
+            }
+        }
+        return this.clampInterval(enter, leave);
+    }
+
+    private clampInterval(start: number, end: number): ClipInterval | null {
+        const clippedStart = Math.max(0, Math.min(start, end));
+        const clippedEnd = Math.min(1, Math.max(start, end));
+        return clippedEnd - clippedStart > CLIP_EPSILON
+            ? { start: clippedStart, end: clippedEnd }
+            : null;
+    }
+
+    private mergeIntervals(intervals: ClipInterval[]): ClipInterval[] {
+        if (intervals.length === 0) {
+            return [];
+        }
+        intervals.sort((left, right) => left.start - right.start);
+        const merged: ClipInterval[] = [{ ...intervals[0] }];
+        for (let index = 1; index < intervals.length; index++) {
+            const current = intervals[index];
+            const previous = merged[merged.length - 1];
+            if (current.start <= previous.end + CLIP_EPSILON) {
+                previous.end = Math.max(previous.end, current.end);
+            } else {
+                merged.push({ ...current });
+            }
+        }
+        return merged;
+    }
+
+    private invertIntervals(inside: ClipInterval[]): ClipInterval[] {
+        const outside: ClipInterval[] = [];
+        let cursor = 0;
+        for (const interval of inside) {
+            if (interval.start - cursor > CLIP_EPSILON) {
+                outside.push({ start: cursor, end: interval.start });
+            }
+            cursor = Math.max(cursor, interval.end);
+        }
+        if (1 - cursor > CLIP_EPSILON) {
+            outside.push({ start: cursor, end: 1 });
+        }
+        return outside;
+    }
+
+    private chunkSegments(segments: LineSegmentData[]): LineBatch[] {
+        const batches: LineBatch[] = [];
+        for (let index = 0; index < segments.length; index += SEGMENTS_PER_BATCH) {
+            batches.push({ kind: 'line', segments: segments.slice(index, index + SEGMENTS_PER_BATCH) });
+        }
+        return batches;
+    }
+
+    private chunkFrames(frames: SlotsWinFrameConfig[]): FrameBatch[] {
+        const batches: FrameBatch[] = [];
+        for (let index = 0; index < frames.length; index += FRAMES_PER_BATCH) {
+            batches.push({ kind: 'frame', frames: frames.slice(index, index + FRAMES_PER_BATCH) });
+        }
+        return batches;
+    }
+
+    private rebuildBatches(batches: RenderBatch[]): void {
+        this.clearBatches();
+        const parentSprite = this.getComponent(Sprite);
+        if (!parentSprite) {
+            return;
+        }
+        parentSprite.enabled = batches.length > 0;
+
+        for (let index = 0; index < batches.length; index++) {
+            const sprite = index === 0 ? parentSprite : this.createBatchSprite(index);
+            const material = this.createBatchMaterial(batches[index]);
+            sprite.customMaterial = material;
+            this._batchMaterials.push(material);
+        }
+    }
+
+    private createBatchSprite(index: number): Sprite {
+        const sourceTransform = this.getComponent(UITransform)!;
+        const batchNode = new Node(`${BATCH_NODE_NAME}${index}`);
+        // 编辑器预览节点不写入场景文件，避免保存后出现重复批次。
+        batchNode.hideFlags |= CCObject.Flags.DontSave | CCObject.Flags.HideInHierarchy;
+        batchNode.layer = this.node.layer;
+        batchNode.setPosition(0, 0, 0);
+        this.node.addChild(batchNode);
+
+        const transform = batchNode.addComponent(UITransform);
+        transform.setContentSize(sourceTransform.contentSize);
+        transform.setAnchorPoint(sourceTransform.anchorPoint);
+        const sprite = batchNode.addComponent(Sprite);
+        sprite.sizeMode = Sprite.SizeMode.CUSTOM;
+        // 所有批次共享同一张白色 SpriteFrame，避免重建批次时产生临时资源。
+        sprite.spriteFrame = this.getComponent(Sprite)!.spriteFrame;
+        this._batchNodes.push(batchNode);
+        return sprite;
+    }
+
+    private createBatchMaterial(batch: RenderBatch): Material {
+        const material = new Material();
+        material.initialize({ effectAsset: this.effectAsset! });
+        this.setCommonMaterialProperties(material);
+
+        if (batch.kind === 'line') {
+            this.setLineBatchProperties(material, batch.segments);
+        } else {
+            this.setFrameBatchProperties(material, batch.frames);
+        }
+        return material;
+    }
+
+    private setCommonMaterialProperties(material: Material): void {
+        const whiteTexture = builtinResMgr.get<Texture2D>('white-texture');
+        const transform = this.getComponent(UITransform)!;
+        const size = transform.contentSize;
+        const anchor = transform.anchorPoint;
+        material.setProperty('styleConfig', new Vec4(
+            Math.max(this.lineWidth, 0),
+            Math.max(this.frameWidth, 0),
+            Math.max(this.antialiasSoftness, 0.5),
+            1,
+        ));
+        material.setProperty('textureConfig', new Vec4(
+            this.useLineTexture ? 1 : 0,
+            this.useFrameTexture ? 1 : 0,
+            Math.max(this.lineTextureRepeat, 1),
+            0,
+        ));
+        material.setProperty('localBounds', new Vec4(
+            -anchor.x * size.width,
+            -anchor.y * size.height,
+            size.width,
+            size.height,
+        ));
+        material.setProperty('lineColor', this.lineColor);
+        material.setProperty('frameColor', this.frameColor);
+        material.setProperty('lineTexture', this.lineTexture ?? whiteTexture);
+        material.setProperty('frameTexture', this.frameTexture ?? whiteTexture);
+    }
+
+    private setLineBatchProperties(material: Material, segments: LineSegmentData[]): void {
+        const segmentUniforms = SlotsWinRenderer.createUniformArray(SEGMENTS_PER_BATCH);
+        const infoUniforms = SlotsWinRenderer.createUniformArray(SEGMENTS_PER_BATCH);
+        for (let index = 0; index < segments.length; index++) {
+            const segment = segments[index];
+            segmentUniforms[index].set(segment.start.x, segment.start.y, segment.end.x, segment.end.y);
+            infoUniforms[index].x = segment.distanceFromLineStart;
+        }
+        material.setProperty('drawConfig', new Vec4(segments.length, 0, SlotsWinDrawMode.LINE_ONLY, 0));
+        material.setProperty('lineSegments', segmentUniforms);
+        material.setProperty('lineSegmentInfo', infoUniforms);
+        material.setProperty('frameData', SlotsWinRenderer.createUniformArray(FRAMES_PER_BATCH));
+    }
+
+    private setFrameBatchProperties(material: Material, frames: SlotsWinFrameConfig[]): void {
+        const frameUniforms = SlotsWinRenderer.createUniformArray(FRAMES_PER_BATCH);
+        for (let index = 0; index < frames.length; index++) {
+            const frame = frames[index];
+            if (frame.shape === SlotsWinFrameShape.CIRCLE) {
+                frameUniforms[index].set(frame.position.x, frame.position.y, Math.max(frame.radius, 0), -1);
+            } else {
+                frameUniforms[index].set(
+                    frame.position.x,
+                    frame.position.y,
+                    Math.max(frame.width, 0) * 0.5,
+                    Math.max(frame.height, 0) * 0.5,
+                );
+            }
+        }
+        material.setProperty('drawConfig', new Vec4(0, frames.length, SlotsWinDrawMode.FRAME_ONLY, 0));
+        material.setProperty('lineSegments', SlotsWinRenderer.createUniformArray(SEGMENTS_PER_BATCH));
+        material.setProperty('lineSegmentInfo', SlotsWinRenderer.createUniformArray(SEGMENTS_PER_BATCH));
+        material.setProperty('frameData', frameUniforms);
+    }
+
+    private clearBatches(): void {
+        const parentSprite = this.getComponent(Sprite);
+        if (parentSprite) {
+            parentSprite.customMaterial = null;
+        }
+        for (const material of this._batchMaterials) {
+            material.destroy();
+        }
+        for (const batchNode of this._batchNodes) {
+            batchNode.destroy();
+        }
+        this._batchMaterials.length = 0;
+        this._batchNodes.length = 0;
+    }
+
+    private ensureSpriteFrame(sprite: Sprite | null): void {
+        if (!sprite || sprite.spriteFrame) {
+            return;
+        }
+        const spriteFrame = new SpriteFrame();
+        spriteFrame.hideFlags |= CCObject.Flags.DontSave;
+        spriteFrame.texture = builtinResMgr.get<Texture2D>('white-texture');
+        // 内置白纹理没有 HTMLImageElement/Canvas 图片源，不能复制进动态合图。
+        spriteFrame.packable = false;
+        sprite.spriteFrame = spriteFrame;
+        sprite.sizeMode = Sprite.SizeMode.CUSTOM;
+
+        // 只记录父节点的临时 SpriteFrame；子批次随节点销毁。
+        if (sprite.node === this.node) {
+            this._ownedSpriteFrame = spriteFrame;
+        }
+    }
+
+    private static createUniformArray(length: number): Vec4[] {
+        return Array.from({ length }, () => new Vec4());
+    }
+}

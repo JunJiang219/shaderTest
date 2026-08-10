@@ -1,32 +1,43 @@
-import { _decorator, Component, Node, Sprite } from 'cc';
+import { _decorator, Component, EventTouch, Layout, Node, Sprite, Vec2 } from 'cc';
+import { Blur } from './Blur';
+import { SlotsWinRenderer } from './slots/SlotsWinRenderer';
 const { ccclass, property } = _decorator;
+
+enum ECtrl {
+    UseEff,
+    NotUseEff,
+    Recusive,
+    NotRecusive,
+    ModifyIns,
+}
 
 @ccclass('App2d')
 export class App2d extends Component {
 
-    @property(Node)
-    hitNode: Node = null;
+    @property(SlotsWinRenderer)
+    renderer: SlotsWinRenderer = null;
 
-    private _hitTime: number = 0;
-    private _hitDuration: number = 0.3;
+    protected start(): void {
+        // 坐标均相对 renderer 所在节点的锚点，单位是像素。
+        // this.renderer.setLinePoints([
+        //     new Vec2(-400, 0),
+        //     new Vec2(0, 120),
+        //     new Vec2(400, 0),
+        // ]);
+
+        // this.renderer.syncNow();
+    }
 
     onEnable() {
-        this.node.on(Node.EventType.TOUCH_END, this.onHit, this);
+        // this.btn.on(Node.EventType.TOUCH_END, this.onBtnTouch, this);
     }
 
     onDisable() {
-        this.node.off(Node.EventType.TOUCH_END, this.onHit, this);
+        // this.btn.off(Node.EventType.TOUCH_END, this.onBtnTouch, this);
     }
 
-    onHit() {
-        this._hitTime = 0;
-    }
+    onBtnTouch(evt: EventTouch) {
 
-    protected update(dt: number): void {
-        if (this._hitTime < this._hitDuration) {
-            this._hitTime += dt;
-            this.hitNode.getComponent(Sprite).material.setProperty('hitTime', this._hitTime);
-        }
     }
 }
 
