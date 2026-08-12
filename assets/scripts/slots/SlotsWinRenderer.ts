@@ -85,6 +85,8 @@ interface ClipInterval {
 interface LineBatch {
     kind: 'line';
     segments: LineSegmentData[];
+    /** 圆弧展开后的整条中奖线长度，用于让扫光跨批次连续循环。 */
+    totalLength: number;
 }
 
 interface FrameBatch {
@@ -137,6 +139,21 @@ export class SlotsWinRenderer extends Component {
 
     @property({ min: 1, tooltip: '中奖线纹理沿线方向每多少像素重复一次' })
     lineTextureRepeat = 128;
+
+    @property({ tooltip: '是否开启沿整条中奖线移动的扫光' })
+    enableLineSweep = false;
+
+    @property({ tooltip: '扫光颜色；透明度用于控制扫光强度' })
+    lineSweepColor = new Color(255, 255, 230, 230);
+
+    @property({ min: 1, tooltip: '扫光带宽度（像素，沿中奖线方向）' })
+    lineSweepWidth = 96;
+
+    @property({ tooltip: '扫光移动速度（像素/秒）；负数表示反向移动' })
+    lineSweepSpeed = 180;
+
+    @property({ min: 0.01, max: 1, step: 0.05, tooltip: '扫光边缘柔和度，越大越柔和' })
+    lineSweepSoftness = 0.65;
 
     @property({ type: [SlotsWinFrameConfig], tooltip: '矩形框和圆形框列表；总数不设上限' })
     frames: SlotsWinFrameConfig[] = [];
@@ -200,6 +217,12 @@ export class SlotsWinRenderer extends Component {
         this.syncNow();
     }
 
+    /** 运行时开启或关闭中奖线扫光，并立即刷新当前绘制批次。 */
+    public setLineSweepEnabled(enabled: boolean): void {
+        this.enableLineSweep = enabled;
+        this.syncNow();
+    }
+
     /** 运行时替换中奖框列表，框数不设上限。 */
     public setFrames(frames: ReadonlyArray<SlotsWinFrameConfig>): void {
         this.frames = frames.slice();
@@ -236,9 +259,7 @@ export class SlotsWinRenderer extends Component {
     }
 
     private createRenderBatches(): RenderBatch[] {
-        const lineBatches = this.shouldDrawLine()
-            ? this.chunkSegments(this.buildVisibleSegments())
-            : [];
+        const lineBatches = this.shouldDrawLine() ? this.buildLineBatches() : [];
         const frameBatches = this.shouldDrawFrame()
             ? this.chunkFrames(this.frames)
             : [];
@@ -246,6 +267,13 @@ export class SlotsWinRenderer extends Component {
         return this.layerOrder === SlotsWinLayerOrder.LINE_ABOVE_FRAME
             ? [...frameBatches, ...lineBatches]
             : [...lineBatches, ...frameBatches];
+    }
+
+    /** 只生成一次圆弧点和总长度，避免批次较多时重复计算。 */
+    private buildLineBatches(): LineBatch[] {
+        const renderPoints = this.buildRenderableLinePoints();
+        const totalLength = this.calculateLineLength(renderPoints);
+        return this.chunkSegments(this.buildVisibleSegments(renderPoints), totalLength);
     }
 
     private shouldDrawLine(): boolean {
@@ -256,9 +284,8 @@ export class SlotsWinRenderer extends Component {
         return this.drawMode !== SlotsWinDrawMode.LINE_ONLY && this.frames.length > 0;
     }
 
-    private buildVisibleSegments(): LineSegmentData[] {
+    private buildVisibleSegments(renderPoints: ReadonlyArray<Vec2>): LineSegmentData[] {
         const result: LineSegmentData[] = [];
-        const renderPoints = this.buildRenderableLinePoints();
         let traveled = 0;
 
         for (let index = 0; index < renderPoints.length - 1; index++) {
@@ -282,6 +309,15 @@ export class SlotsWinRenderer extends Component {
             traveled += segmentLength;
         }
         return result;
+    }
+
+    /** 计算圆弧展开后的整条路径长度，供纹理和扫光保持连续。 */
+    private calculateLineLength(points: ReadonlyArray<Vec2>): number {
+        let length = 0;
+        for (let index = 0; index < points.length - 1; index++) {
+            length += Vec2.distance(points[index], points[index + 1]);
+        }
+        return length;
     }
 
     /**
@@ -518,10 +554,14 @@ export class SlotsWinRenderer extends Component {
         return outside;
     }
 
-    private chunkSegments(segments: LineSegmentData[]): LineBatch[] {
+    private chunkSegments(segments: LineSegmentData[], totalLength: number): LineBatch[] {
         const batches: LineBatch[] = [];
         for (let index = 0; index < segments.length; index += SEGMENTS_PER_BATCH) {
-            batches.push({ kind: 'line', segments: segments.slice(index, index + SEGMENTS_PER_BATCH) });
+            batches.push({
+                kind: 'line',
+                segments: segments.slice(index, index + SEGMENTS_PER_BATCH),
+                totalLength,
+            });
         }
         return batches;
     }
@@ -573,7 +613,7 @@ export class SlotsWinRenderer extends Component {
     private createBatchMaterial(batch: RenderBatch): Material {
         const material = new Material();
         material.initialize({ effectAsset: this.effectAsset! });
-        this.setCommonMaterialProperties(material);
+        this.setCommonMaterialProperties(material, batch.kind === 'line' ? batch.totalLength : 0);
 
         if (batch.kind === 'line') {
             this.setLineBatchProperties(material, batch.segments);
@@ -583,7 +623,7 @@ export class SlotsWinRenderer extends Component {
         return material;
     }
 
-    private setCommonMaterialProperties(material: Material): void {
+    private setCommonMaterialProperties(material: Material, totalLineLength: number): void {
         const whiteTexture = builtinResMgr.get<Texture2D>('white-texture');
         const transform = this.getComponent(UITransform)!;
         const size = transform.contentSize;
@@ -598,7 +638,13 @@ export class SlotsWinRenderer extends Component {
             this.useLineTexture ? 1 : 0,
             this.useFrameTexture ? 1 : 0,
             Math.max(this.lineTextureRepeat, 1),
-            0,
+            Math.max(totalLineLength, 0),
+        ));
+        material.setProperty('lineSweepConfig', new Vec4(
+            this.enableLineSweep ? 1 : 0,
+            Math.max(this.lineSweepWidth, 1),
+            this.lineSweepSpeed,
+            Math.max(0.01, Math.min(this.lineSweepSoftness, 1)),
         ));
         material.setProperty('localBounds', new Vec4(
             -anchor.x * size.width,
@@ -607,6 +653,7 @@ export class SlotsWinRenderer extends Component {
             size.height,
         ));
         material.setProperty('lineColor', this.lineColor);
+        material.setProperty('lineSweepColor', this.lineSweepColor);
         material.setProperty('frameColor', this.frameColor);
         material.setProperty('lineTexture', this.lineTexture ?? whiteTexture);
         material.setProperty('frameTexture', this.frameTexture ?? whiteTexture);

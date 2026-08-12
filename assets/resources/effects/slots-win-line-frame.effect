@@ -19,6 +19,7 @@ CCEffect %{
         cullMode: none
       properties:
         lineColor: { value: [1, 0.78, 0.12, 1], editor: { type: color } }
+        lineSweepColor: { value: [1, 1, 0.9, 0.9], editor: { type: color } }
         frameColor: { value: [1, 0.3, 0.08, 1], editor: { type: color } }
         lineTexture: { value: white }
         frameTexture: { value: white }
@@ -56,6 +57,8 @@ CCProgram slots-win-fs %{
 
   precision highp float;
 
+  #include <builtin/uniforms/cc-global>
+
   // Creator 3.8.x 要求自定义 uniform 数组长度直接写数字，不能使用宏。
 
   in vec2 v_uv;
@@ -71,11 +74,14 @@ CCProgram slots-win-fs %{
     vec4 drawConfig;
     // x=线宽，y=框宽，z=抗锯齿柔和度，w=框内是否绘制线。
     vec4 styleConfig;
-    // x=线用纹理，y=框用纹理，z=线纹理横向重复长度，w=保留。
+    // x=线用纹理，y=框用纹理，z=线纹理横向重复长度，w=整条线长度。
     vec4 textureConfig;
+    // x=是否开启扫光，y=扫光宽度（像素），z=速度（像素/秒），w=柔和度。
+    vec4 lineSweepConfig;
     // x=本地左边界，y=本地下边界，z=节点宽，w=节点高。
     vec4 localBounds;
     vec4 lineColor;
+    vec4 lineSweepColor;
     vec4 frameColor;
     // 每段为 (起点x, 起点y, 终点x, 终点y)。
     vec4 lineSegments[16];
@@ -87,6 +93,7 @@ CCProgram slots-win-fs %{
 
   struct LineResult {
     float distanceToCenter;
+    float distanceFromLineStart;
     vec2 textureUV;
   };
 
@@ -107,6 +114,7 @@ CCProgram slots-win-fs %{
   LineResult findNearestLine(vec2 point) {
     LineResult result;
     result.distanceToCenter = 1000000.0;
+    result.distanceFromLineStart = 0.0;
     result.textureUV = vec2(0.0, 0.5);
 
     float repeatLength = max(textureConfig.z, 1.0);
@@ -128,6 +136,7 @@ CCProgram slots-win-fs %{
         float width = max(styleConfig.x, 0.0001);
         result.distanceToCenter = distanceToSegment;
         float distanceFromLineStart = lineSegmentInfo[i].x + ratio * segmentLength;
+        result.distanceFromLineStart = distanceFromLineStart;
         result.textureUV = vec2(fract(distanceFromLineStart / repeatLength), side / width + 0.5);
       }
     }
@@ -205,6 +214,23 @@ CCProgram slots-win-fs %{
     return top + bottom * (1.0 - top.a);
   }
 
+  // 计算沿整条折线移动的柔和扫光。首尾使用环形距离，循环时不会突然消失。
+  float lineSweepStrength(float distanceFromStart) {
+    if (lineSweepConfig.x < 0.5 || textureConfig.w <= 0.0001) {
+      return 0.0;
+    }
+
+    float totalLength = textureConfig.w;
+    float center = mod(cc_time.x * lineSweepConfig.z, totalLength);
+    float distanceToSweep = abs(distanceFromStart - center);
+    distanceToSweep = min(distanceToSweep, totalLength - distanceToSweep);
+
+    float halfWidth = max(lineSweepConfig.y * 0.5, 0.5);
+    float softness = clamp(lineSweepConfig.w, 0.01, 1.0);
+    float solidRadius = halfWidth * (1.0 - softness);
+    return 1.0 - smoothstep(solidRadius, halfWidth, distanceToSweep);
+  }
+
   vec4 frag () {
     // Sprite 的普通组装器提交的是世界坐标，因此用全尺寸白图 UV 还原节点本地坐标。
     // Cocos 纹理 UV 的 y 轴向下，而 UI 本地坐标 y 轴向上，这里需要翻转 y。
@@ -234,7 +260,10 @@ CCProgram slots-win-fs %{
 
     vec4 sampledLine = textureConfig.x > 0.5 ? texture(lineTexture, line.textureUV) : vec4(1.0);
     vec4 sampledFrame = textureConfig.y > 0.5 ? texture(frameTexture, frame.textureUV) : vec4(1.0);
-    vec4 lineLayer = makeLayer(sampledLine * lineColor, lineCoverage);
+    vec4 linePaint = sampledLine * lineColor;
+    float sweepStrength = lineSweepStrength(line.distanceFromLineStart) * lineSweepColor.a;
+    linePaint.rgb = mix(linePaint.rgb, lineSweepColor.rgb, clamp(sweepStrength, 0.0, 1.0));
+    vec4 lineLayer = makeLayer(linePaint, lineCoverage);
     vec4 frameLayer = makeLayer(sampledFrame * frameColor, frameCoverage);
 
     vec4 outputColor = drawConfig.w > 0.5
