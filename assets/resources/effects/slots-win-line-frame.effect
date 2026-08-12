@@ -78,6 +78,10 @@ CCProgram slots-win-fs %{
     vec4 textureConfig;
     // x=是否开启扫光，y=扫光宽度（像素），z=速度（像素/秒），w=柔和度。
     vec4 lineSweepConfig;
+    // x=绘制方式，y=时长（秒），z=本轮开始时间，w=方向（0 左到右，1 右到左）。
+    vec4 lineRevealConfig;
+    // x=整条中奖线最小 X，y=最大 X，其余保留。
+    vec4 lineRevealBounds;
     // x=本地左边界，y=本地下边界，z=节点宽，w=节点高。
     vec4 localBounds;
     vec4 lineColor;
@@ -231,6 +235,26 @@ CCProgram slots-win-fs %{
     return 1.0 - smoothstep(solidRadius, halfWidth, distanceToSweep);
   }
 
+  // 使用统一的本地 X 阈值裁切所有线段，使跨转角、跨批次的绘制进度完全一致。
+  float lineRevealCoverage(float localX) {
+    if (lineRevealConfig.x < 0.5) {
+      return 1.0;
+    }
+
+    float duration = max(lineRevealConfig.y, 0.01);
+    float progress = clamp((cc_time.x - lineRevealConfig.z) / duration, 0.0, 1.0);
+    float minX = min(lineRevealBounds.x, lineRevealBounds.y);
+    float maxX = max(lineRevealBounds.x, lineRevealBounds.y);
+    float threshold = mix(minX, maxX, progress);
+    float revealDistance = localX - threshold;
+    if (lineRevealConfig.w > 0.5) {
+      threshold = mix(maxX, minX, progress);
+      revealDistance = threshold - localX;
+    }
+
+    return coverageFromDistance(revealDistance);
+  }
+
   vec4 frag () {
     // Sprite 的普通组装器提交的是世界坐标，因此用全尺寸白图 UV 还原节点本地坐标。
     // Cocos 纹理 UV 的 y 轴向下，而 UI 本地坐标 y 轴向上，这里需要翻转 y。
@@ -241,6 +265,7 @@ CCProgram slots-win-fs %{
 
     float lineDistance = line.distanceToCenter - max(styleConfig.x * 0.5, 0.0001);
     float lineCoverage = coverageFromDistance(lineDistance);
+    lineCoverage *= lineRevealCoverage(localPosition.x);
     float frameCoverage = coverageFromDistance(frame.outlineDistance);
     lineCoverage *= step(0.0001, styleConfig.x);
     frameCoverage *= step(0.0001, styleConfig.y);

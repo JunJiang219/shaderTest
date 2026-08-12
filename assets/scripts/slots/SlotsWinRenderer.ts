@@ -4,6 +4,7 @@ import {
     CCObject,
     Color,
     Component,
+    director,
     EffectAsset,
     Enum,
     error,
@@ -44,6 +45,20 @@ export enum SlotsWinLineCornerStyle {
     SHARP = 0,
     /** 在折线点两侧按指定半径生成圆弧。 */
     ROUNDED = 1,
+}
+
+/** 中奖线的初始绘制表现。 */
+export enum SlotsWinLineDrawStyle {
+    /** 直接显示完整中奖线。 */
+    COMPLETE = 0,
+    /** 按节点本地 X 轴方向随时间逐渐显示。 */
+    X_AXIS_REVEAL = 1,
+}
+
+/** 动态绘制沿节点本地 X 轴的方向。 */
+export enum SlotsWinLineRevealDirection {
+    LEFT_TO_RIGHT = 0,
+    RIGHT_TO_LEFT = 1,
 }
 
 export enum SlotsWinFrameShape {
@@ -87,6 +102,9 @@ interface LineBatch {
     segments: LineSegmentData[];
     /** 圆弧展开后的整条中奖线长度，用于让扫光跨批次连续循环。 */
     totalLength: number;
+    /** 所有批次共用同一个 X 范围，保证动态绘制进度一致。 */
+    minX: number;
+    maxX: number;
 }
 
 interface FrameBatch {
@@ -140,6 +158,15 @@ export class SlotsWinRenderer extends Component {
     @property({ min: 1, tooltip: '中奖线纹理沿线方向每多少像素重复一次' })
     lineTextureRepeat = 128;
 
+    @property({ type: Enum(SlotsWinLineDrawStyle), tooltip: '直接显示完整中奖线，或沿本地 X 轴动态绘制' })
+    lineDrawStyle: SlotsWinLineDrawStyle = SlotsWinLineDrawStyle.COMPLETE;
+
+    @property({ type: Enum(SlotsWinLineRevealDirection), tooltip: '动态绘制沿本地 X 轴的方向' })
+    lineRevealDirection: SlotsWinLineRevealDirection = SlotsWinLineRevealDirection.LEFT_TO_RIGHT;
+
+    @property({ min: 0.01, tooltip: '中奖线从一端绘制到另一端所需时间（秒）' })
+    lineRevealDuration = 0.8;
+
     @property({ tooltip: '是否开启沿整条中奖线移动的扫光' })
     enableLineSweep = false;
 
@@ -177,17 +204,21 @@ export class SlotsWinRenderer extends Component {
     antialiasSoftness = 1;
 
     private _loadingEffect = false;
+    /** cc_time 使用秒，这里保存本轮动态绘制的全局起始秒数。 */
+    private _lineRevealStartTime = 0;
     private _ownedSpriteFrame: SpriteFrame | null = null;
     private readonly _batchNodes: Node[] = [];
     private readonly _batchMaterials: Material[] = [];
 
     protected onLoad(): void {
+        this.resetLineRevealTime();
         this.ensureSpriteFrame(this.getComponent(Sprite));
         this.ensureEffect();
     }
 
     protected onEnable(): void {
         this.node.on(Node.EventType.SIZE_CHANGED, this.syncNow, this);
+        this.resetLineRevealTime();
         this.ensureSpriteFrame(this.getComponent(Sprite));
         this.ensureEffect();
         this.syncNow();
@@ -206,6 +237,8 @@ export class SlotsWinRenderer extends Component {
 
     /** Inspector 中修改配置后，编辑器会立即刷新预览。 */
     protected onValidate(): void {
+        // Inspector 中修改动态绘制参数后，从头播放，方便直接观察效果。
+        this.resetLineRevealTime();
         this.ensureSpriteFrame(this.getComponent(Sprite));
         this.ensureEffect();
         this.syncNow();
@@ -214,12 +247,28 @@ export class SlotsWinRenderer extends Component {
     /** 运行时替换单条中奖线的本地坐标点，点数不设上限。 */
     public setLinePoints(points: ReadonlyArray<Vec2>): void {
         this.linePoints = points.map((point) => point.clone());
+        if (this.lineDrawStyle === SlotsWinLineDrawStyle.X_AXIS_REVEAL) {
+            this.resetLineRevealTime();
+        }
         this.syncNow();
     }
 
     /** 运行时开启或关闭中奖线扫光，并立即刷新当前绘制批次。 */
     public setLineSweepEnabled(enabled: boolean): void {
         this.enableLineSweep = enabled;
+        this.syncNow();
+    }
+
+    /** 切换到动态绘制并从头播放；播放结束后保持完整显示。 */
+    public playLineReveal(): void {
+        this.lineDrawStyle = SlotsWinLineDrawStyle.X_AXIS_REVEAL;
+        this.resetLineRevealTime();
+        this.syncNow();
+    }
+
+    /** 立即显示完整中奖线。 */
+    public showCompleteLine(): void {
+        this.lineDrawStyle = SlotsWinLineDrawStyle.COMPLETE;
         this.syncNow();
     }
 
@@ -273,7 +322,13 @@ export class SlotsWinRenderer extends Component {
     private buildLineBatches(): LineBatch[] {
         const renderPoints = this.buildRenderableLinePoints();
         const totalLength = this.calculateLineLength(renderPoints);
-        return this.chunkSegments(this.buildVisibleSegments(renderPoints), totalLength);
+        const bounds = this.calculateLineXBounds(renderPoints);
+        return this.chunkSegments(
+            this.buildVisibleSegments(renderPoints),
+            totalLength,
+            bounds.min,
+            bounds.max,
+        );
     }
 
     private shouldDrawLine(): boolean {
@@ -318,6 +373,22 @@ export class SlotsWinRenderer extends Component {
             length += Vec2.distance(points[index], points[index + 1]);
         }
         return length;
+    }
+
+    /** 动态绘制只看整条线的全局 X 范围，不按线段长度分别推进。 */
+    private calculateLineXBounds(points: ReadonlyArray<Vec2>): { min: number; max: number } {
+        if (points.length === 0) {
+            return { min: 0, max: 0 };
+        }
+        let min = points[0].x;
+        let max = points[0].x;
+        for (let index = 1; index < points.length; index++) {
+            min = Math.min(min, points[index].x);
+            max = Math.max(max, points[index].x);
+        }
+        // 线段使用圆头，需要把半个线宽和抗锯齿边缘算进范围，100% 时才会完整显示。
+        const padding = Math.max(this.lineWidth, 0) * 0.5 + Math.max(this.antialiasSoftness, 0.5);
+        return { min: min - padding, max: max + padding };
     }
 
     /**
@@ -554,13 +625,20 @@ export class SlotsWinRenderer extends Component {
         return outside;
     }
 
-    private chunkSegments(segments: LineSegmentData[], totalLength: number): LineBatch[] {
+    private chunkSegments(
+        segments: LineSegmentData[],
+        totalLength: number,
+        minX: number,
+        maxX: number,
+    ): LineBatch[] {
         const batches: LineBatch[] = [];
         for (let index = 0; index < segments.length; index += SEGMENTS_PER_BATCH) {
             batches.push({
                 kind: 'line',
                 segments: segments.slice(index, index + SEGMENTS_PER_BATCH),
                 totalLength,
+                minX,
+                maxX,
             });
         }
         return batches;
@@ -613,7 +691,7 @@ export class SlotsWinRenderer extends Component {
     private createBatchMaterial(batch: RenderBatch): Material {
         const material = new Material();
         material.initialize({ effectAsset: this.effectAsset! });
-        this.setCommonMaterialProperties(material, batch.kind === 'line' ? batch.totalLength : 0);
+        this.setCommonMaterialProperties(material, batch);
 
         if (batch.kind === 'line') {
             this.setLineBatchProperties(material, batch.segments);
@@ -623,8 +701,9 @@ export class SlotsWinRenderer extends Component {
         return material;
     }
 
-    private setCommonMaterialProperties(material: Material, totalLineLength: number): void {
+    private setCommonMaterialProperties(material: Material, batch: RenderBatch): void {
         const whiteTexture = builtinResMgr.get<Texture2D>('white-texture');
+        const lineBatch = batch.kind === 'line' ? batch : null;
         const transform = this.getComponent(UITransform)!;
         const size = transform.contentSize;
         const anchor = transform.anchorPoint;
@@ -638,13 +717,25 @@ export class SlotsWinRenderer extends Component {
             this.useLineTexture ? 1 : 0,
             this.useFrameTexture ? 1 : 0,
             Math.max(this.lineTextureRepeat, 1),
-            Math.max(totalLineLength, 0),
+            Math.max(lineBatch?.totalLength ?? 0, 0),
         ));
         material.setProperty('lineSweepConfig', new Vec4(
             this.enableLineSweep ? 1 : 0,
             Math.max(this.lineSweepWidth, 1),
             this.lineSweepSpeed,
             Math.max(0.01, Math.min(this.lineSweepSoftness, 1)),
+        ));
+        material.setProperty('lineRevealConfig', new Vec4(
+            this.lineDrawStyle === SlotsWinLineDrawStyle.X_AXIS_REVEAL ? 1 : 0,
+            Math.max(this.lineRevealDuration, 0.01),
+            this._lineRevealStartTime,
+            this.lineRevealDirection,
+        ));
+        material.setProperty('lineRevealBounds', new Vec4(
+            lineBatch?.minX ?? 0,
+            lineBatch?.maxX ?? 0,
+            0,
+            0,
         ));
         material.setProperty('localBounds', new Vec4(
             -anchor.x * size.width,
@@ -725,6 +816,11 @@ export class SlotsWinRenderer extends Component {
         if (sprite.node === this.node) {
             this._ownedSpriteFrame = spriteFrame;
         }
+    }
+
+    /** 记录与 Shader 内 cc_time.x 相同时间轴上的起始时间。 */
+    private resetLineRevealTime(): void {
+        this._lineRevealStartTime = director.root?.cumulativeTime ?? 0;
     }
 
     private static createUniformArray(length: number): Vec4[] {

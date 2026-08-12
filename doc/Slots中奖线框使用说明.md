@@ -26,6 +26,9 @@ flowchart LR
 - `Line Corner Style`：`SHARP` 为无弧度直接转折，`ROUNDED` 为圆弧转折。
 - `Line Corner Radius`：圆弧转角半径，单位是像素；相邻线段过短时会自动缩小，避免圆弧互相穿过。
 - `Line Corner Segments`：每个圆弧使用的细分线段数，默认 `8` 已能满足大部分效果；需要更圆滑时再增加。
+- `Line Draw Style`：`COMPLETE` 直接显示完整中奖线；`X_AXIS_REVEAL` 从一端逐渐绘制完整。
+- `Line Reveal Direction`：选择从左向右或从右向左绘制。
+- `Line Reveal Duration`：动态绘制完整所需时间，单位是秒；完成后保持完整显示。
 - `Enable Line Sweep`：开启或关闭中奖线扫光，默认关闭。
 - `Line Sweep Color`：扫光颜色，颜色的透明度用于控制扫光强度。
 - `Line Sweep Width`：扫光沿中奖线方向占用的宽度，单位是像素。
@@ -43,6 +46,7 @@ flowchart LR
 import { Vec2 } from 'cc';
 import {
     SlotsWinLineCornerStyle,
+    SlotsWinLineRevealDirection,
     SlotsWinRenderer,
 } from './slots/SlotsWinRenderer';
 
@@ -64,6 +68,14 @@ renderer.lineCornerSegments = 8;
 renderer.lineSweepWidth = 96;
 renderer.lineSweepSpeed = 180;
 renderer.setLineSweepEnabled(true);
+
+// 动态绘制使用整条线统一的本地 X 轴进度，不会在转角或跨批次时错位。
+renderer.lineRevealDirection = SlotsWinLineRevealDirection.LEFT_TO_RIGHT;
+renderer.lineRevealDuration = 0.8;
+renderer.playLineReveal();
+
+// 取消动态过程，立即显示完整中奖线。
+renderer.showCompleteLine();
 ```
 
 直接修改组件公开字段后，调用一次 `syncNow()` 即可上传。组件对折线点和框的总数不设上限；内部会自动拆成多个兼容 WebGL1 的小批次。数据越多 draw call 越多，例如 100 个线段约为 7 批、100 个框约为 7 批。
