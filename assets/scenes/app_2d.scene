@@ -349,19 +349,19 @@
         "y": 0
       }
     ],
+    "lineCornerStyle": 1,
+    "lineCornerRadius": 24,
+    "lineCornerSegments": 8,
     "lineWidth": 8,
     "lineColor": {
       "__type__": "cc.Color",
       "r": 255,
-      "g": 255,
-      "b": 255,
+      "g": 200,
+      "b": 31,
       "a": 255
     },
-    "useLineTexture": true,
-    "lineTexture": {
-      "__uuid__": "67878957-914b-4b3c-a31f-431d410f2912@6c48a",
-      "__expectedType__": "cc.Texture2D"
-    },
+    "useLineTexture": false,
+    "lineTexture": null,
     "lineTextureRepeat": 128,
     "frames": [
       {
@@ -378,15 +378,12 @@
     "frameColor": {
       "__type__": "cc.Color",
       "r": 255,
-      "g": 255,
-      "b": 255,
+      "g": 77,
+      "b": 20,
       "a": 255
     },
-    "useFrameTexture": true,
-    "frameTexture": {
-      "__uuid__": "8b5d5721-cbdb-4866-84c9-b76452c3f7ef@6c48a",
-      "__expectedType__": "cc.Texture2D"
-    },
+    "useFrameTexture": false,
+    "frameTexture": null,
     "drawLineInsideFrames": true,
     "antialiasSoftness": 1,
     "_id": "2farttVn1I8a5kNLYs0NpP"

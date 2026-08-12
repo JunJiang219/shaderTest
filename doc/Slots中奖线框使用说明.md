@@ -23,6 +23,9 @@ flowchart LR
 - `Draw Mode`：只画线、只画框、同时画线框。
 - `Layer Order`：控制线与框重叠时的上下关系。
 - `Draw Line Inside Frames`：关闭后，中奖框内部的中奖线会被平滑裁掉。
+- `Line Corner Style`：`SHARP` 为无弧度直接转折，`ROUNDED` 为圆弧转折。
+- `Line Corner Radius`：圆弧转角半径，单位是像素；相邻线段过短时会自动缩小，避免圆弧互相穿过。
+- `Line Corner Segments`：每个圆弧使用的细分线段数，默认 `8` 已能满足大部分效果；需要更圆滑时再增加。
 - `Use Line Texture / Use Frame Texture`：关闭时使用纯色；开启时采样纹理并乘对应颜色。
 - `Line Texture Repeat`：中奖线纹理沿整条折线每多少像素重复一次。
 - `Antialias Softness`：一般保持 `1`，数值越大边缘越柔和。
@@ -33,7 +36,10 @@ flowchart LR
 
 ```ts
 import { Vec2 } from 'cc';
-import { SlotsWinRenderer } from './slots/SlotsWinRenderer';
+import {
+    SlotsWinLineCornerStyle,
+    SlotsWinRenderer,
+} from './slots/SlotsWinRenderer';
 
 const renderer = node.getComponent(SlotsWinRenderer)!;
 
@@ -45,6 +51,12 @@ renderer.setLinePoints([
     new Vec2(160, -80),
     new Vec2(320, 120),
 ]);
+
+// 开启圆弧转折；切回 SHARP 即可恢复无弧度转折。
+renderer.lineCornerStyle = SlotsWinLineCornerStyle.ROUNDED;
+renderer.lineCornerRadius = 24;
+renderer.lineCornerSegments = 8;
+renderer.syncNow();
 ```
 
 直接修改组件公开字段后，调用一次 `syncNow()` 即可上传。组件对折线点和框的总数不设上限；内部会自动拆成多个兼容 WebGL1 的小批次。数据越多 draw call 越多，例如 100 个线段约为 7 批、100 个框约为 7 批。

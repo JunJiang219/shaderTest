@@ -38,6 +38,14 @@ export enum SlotsWinLayerOrder {
     LINE_ABOVE_FRAME = 1,
 }
 
+/** 中奖线经过折线点时的转折方式。 */
+export enum SlotsWinLineCornerStyle {
+    /** 保留原始折线的直接转折。 */
+    SHARP = 0,
+    /** 在折线点两侧按指定半径生成圆弧。 */
+    ROUNDED = 1,
+}
+
 export enum SlotsWinFrameShape {
     RECTANGLE = 0,
     CIRCLE = 1,
@@ -106,11 +114,20 @@ export class SlotsWinRenderer extends Component {
     @property({ type: [Vec2], tooltip: '折线节点的本地坐标，按数组顺序依次连接；总数不设上限' })
     linePoints: Vec2[] = [];
 
+    @property({ type: Enum(SlotsWinLineCornerStyle), tooltip: '折线转折样式：直接转折或圆弧转折' })
+    lineCornerStyle: SlotsWinLineCornerStyle = SlotsWinLineCornerStyle.SHARP;
+
+    @property({ min: 0, tooltip: '圆弧转角半径（像素）；相邻线段过短时会自动缩小' })
+    lineCornerRadius = 24;
+
+    @property({ min: 1, max: 32, step: 1, tooltip: '每个圆弧转角使用的线段数，数值越大越平滑' })
+    lineCornerSegments = 8;
+
     @property({ min: 0, tooltip: '中奖线宽度（像素）' })
     lineWidth = 8;
 
     @property({ tooltip: '中奖线纯色；使用纹理时作为纹理染色' })
-    lineColor = new Color(255, 200, 31, 255);
+    lineColor = new Color(255, 200, 31, 255);   // #FFC81F
 
     @property({ tooltip: '中奖线是否使用纹理' })
     useLineTexture = false;
@@ -128,7 +145,7 @@ export class SlotsWinRenderer extends Component {
     frameWidth = 8;
 
     @property({ tooltip: '中奖框纯色；使用纹理时作为纹理染色' })
-    frameColor = new Color(255, 77, 20, 255);
+    frameColor = new Color(255, 77, 20, 255);   // #FF4D14
 
     @property({ tooltip: '中奖框是否使用纹理' })
     useFrameTexture = false;
@@ -241,11 +258,12 @@ export class SlotsWinRenderer extends Component {
 
     private buildVisibleSegments(): LineSegmentData[] {
         const result: LineSegmentData[] = [];
+        const renderPoints = this.buildRenderableLinePoints();
         let traveled = 0;
 
-        for (let index = 0; index < this.linePoints.length - 1; index++) {
-            const start = this.linePoints[index];
-            const end = this.linePoints[index + 1];
+        for (let index = 0; index < renderPoints.length - 1; index++) {
+            const start = renderPoints[index];
+            const end = renderPoints[index + 1];
             const segmentLength = Vec2.distance(start, end);
             if (segmentLength <= CLIP_EPSILON) {
                 continue;
@@ -264,6 +282,116 @@ export class SlotsWinRenderer extends Component {
             traveled += segmentLength;
         }
         return result;
+    }
+
+    /**
+     * 根据转折配置生成真正参与绘制的点。
+     * 圆弧只增加渲染线段，原始 linePoints 不会被修改。
+     */
+    private buildRenderableLinePoints(): Vec2[] {
+        const points = this.removeDuplicateLinePoints();
+        if (this.lineCornerStyle !== SlotsWinLineCornerStyle.ROUNDED
+            || this.lineCornerRadius <= CLIP_EPSILON
+            || points.length < 3) {
+            return points;
+        }
+
+        const result: Vec2[] = [points[0].clone()];
+        for (let index = 1; index < points.length - 1; index++) {
+            this.appendRoundedCorner(result, points[index - 1], points[index], points[index + 1]);
+        }
+        this.appendUniquePoint(result, points[points.length - 1]);
+        return result;
+    }
+
+    /** 连续重复点没有长度，先移除，避免圆弧方向计算出现除零。 */
+    private removeDuplicateLinePoints(): Vec2[] {
+        const result: Vec2[] = [];
+        for (const point of this.linePoints) {
+            this.appendUniquePoint(result, point);
+        }
+        return result;
+    }
+
+    /** 在一个折线点处追加两侧切点和中间圆弧采样点。 */
+    private appendRoundedCorner(result: Vec2[], previous: Vec2, corner: Vec2, next: Vec2): void {
+        const incomingLength = Vec2.distance(previous, corner);
+        const outgoingLength = Vec2.distance(corner, next);
+        const incoming = new Vec2(
+            (corner.x - previous.x) / incomingLength,
+            (corner.y - previous.y) / incomingLength,
+        );
+        const outgoing = new Vec2(
+            (next.x - corner.x) / outgoingLength,
+            (next.y - corner.y) / outgoingLength,
+        );
+        const cross = incoming.x * outgoing.y - incoming.y * outgoing.x;
+        const dot = Math.max(-1, Math.min(1, Vec2.dot(incoming, outgoing)));
+        const sweepAngle = Math.atan2(cross, dot);
+
+        // 共线、反向折返或太小的转角没有稳定圆心，直接保留原折点。
+        if (Math.abs(cross) <= CLIP_EPSILON
+            || Math.abs(sweepAngle) <= CLIP_EPSILON
+            || Math.abs(Math.PI - Math.abs(sweepAngle)) <= CLIP_EPSILON) {
+            this.appendUniquePoint(result, corner);
+            return;
+        }
+
+        const tangentFactor = Math.tan(Math.abs(sweepAngle) * 0.5);
+        const requestedTrim = Math.max(this.lineCornerRadius, 0) * tangentFactor;
+        const trim = Math.min(requestedTrim, incomingLength * 0.5, outgoingLength * 0.5);
+        if (trim <= CLIP_EPSILON || tangentFactor <= CLIP_EPSILON) {
+            this.appendUniquePoint(result, corner);
+            return;
+        }
+
+        const radius = trim / tangentFactor;
+        const tangentStart = new Vec2(
+            corner.x - incoming.x * trim,
+            corner.y - incoming.y * trim,
+        );
+        const tangentEnd = new Vec2(
+            corner.x + outgoing.x * trim,
+            corner.y + outgoing.y * trim,
+        );
+        const turnSide = cross > 0 ? 1 : -1;
+        const center = new Vec2(
+            tangentStart.x - incoming.y * radius * turnSide,
+            tangentStart.y + incoming.x * radius * turnSide,
+        );
+
+        this.appendUniquePoint(result, tangentStart);
+        this.appendArcPoints(result, center, tangentStart, tangentEnd, sweepAngle);
+    }
+
+    /** 使用若干短线段逼近圆弧，线段会继续交给既有的无限分批逻辑。 */
+    private appendArcPoints(
+        result: Vec2[],
+        center: Vec2,
+        tangentStart: Vec2,
+        tangentEnd: Vec2,
+        sweepAngle: number,
+    ): void {
+        const segmentCount = Math.max(1, Math.round(this.lineCornerSegments));
+        const radius = Vec2.distance(center, tangentStart);
+        const startAngle = Math.atan2(tangentStart.y - center.y, tangentStart.x - center.x);
+
+        for (let step = 1; step < segmentCount; step++) {
+            const angle = startAngle + sweepAngle * step / segmentCount;
+            this.appendUniquePoint(result, new Vec2(
+                center.x + Math.cos(angle) * radius,
+                center.y + Math.sin(angle) * radius,
+            ));
+        }
+        this.appendUniquePoint(result, tangentEnd);
+    }
+
+    /** 追加点时顺便过滤浮点误差造成的零长度线段。 */
+    private appendUniquePoint(points: Vec2[], point: Vec2): void {
+        const previous = points[points.length - 1];
+        if (!previous || Vec2.distance(previous, point) > CLIP_EPSILON) {
+            points.push(point.clone());
+        }
     }
 
     /** 求线段位于所有框外部的区间；框会按半个线宽外扩，避免圆头重新伸入框内。 */
