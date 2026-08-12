@@ -61,6 +61,14 @@ export enum SlotsWinLineRevealDirection {
     RIGHT_TO_LEFT = 1,
 }
 
+/** 扫光随时间推进时使用的坐标方式。 */
+export enum SlotsWinLineSweepProgressMode {
+    /** 沿折线自身从起点到终点推进，保留原有表现。 */
+    ALONG_PATH = 0,
+    /** 沿节点本地 X 轴推进，同一 X 坐标的扫光进度一致。 */
+    X_AXIS = 1,
+}
+
 export enum SlotsWinFrameShape {
     RECTANGLE = 0,
     CIRCLE = 1,
@@ -169,6 +177,9 @@ export class SlotsWinRenderer extends Component {
 
     @property({ tooltip: '是否开启沿整条中奖线移动的扫光' })
     enableLineSweep = false;
+
+    @property({ type: Enum(SlotsWinLineSweepProgressMode), tooltip: '扫光沿折线路径推进，或沿本地 X 轴统一推进' })
+    lineSweepProgressMode: SlotsWinLineSweepProgressMode = SlotsWinLineSweepProgressMode.X_AXIS;
 
     @property({ tooltip: '扫光颜色；透明度用于控制扫光强度' })
     lineSweepColor = new Color(255, 255, 230, 230);
@@ -734,7 +745,7 @@ export class SlotsWinRenderer extends Component {
         material.setProperty('lineRevealBounds', new Vec4(
             lineBatch?.minX ?? 0,
             lineBatch?.maxX ?? 0,
-            0,
+            this.lineSweepProgressMode,
             0,
         ));
         material.setProperty('localBounds', new Vec4(

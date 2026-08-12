@@ -30,6 +30,7 @@ flowchart LR
 - `Line Reveal Direction`：选择从左向右或从右向左绘制。
 - `Line Reveal Duration`：动态绘制完整所需时间，单位是秒；完成后保持完整显示。
 - `Enable Line Sweep`：开启或关闭中奖线扫光，默认关闭。
+- `Line Sweep Progress Mode`：默认 `X_AXIS`，沿节点本地 X 轴推进，同一 X 坐标的扫光进度一致；选择 `ALONG_PATH` 可恢复沿折线路径推进的扫光。
 - `Line Sweep Color`：扫光颜色，颜色的透明度用于控制扫光强度。
 - `Line Sweep Width`：扫光沿中奖线方向占用的宽度，单位是像素。
 - `Line Sweep Speed`：扫光速度，单位是像素/秒；使用负数可以反向移动。
@@ -47,6 +48,7 @@ import { Vec2 } from 'cc';
 import {
     SlotsWinLineCornerStyle,
     SlotsWinLineRevealDirection,
+    SlotsWinLineSweepProgressMode,
     SlotsWinRenderer,
 } from './slots/SlotsWinRenderer';
 
@@ -67,6 +69,7 @@ renderer.lineCornerRadius = 24;
 renderer.lineCornerSegments = 8;
 renderer.lineSweepWidth = 96;
 renderer.lineSweepSpeed = 180;
+renderer.lineSweepProgressMode = SlotsWinLineSweepProgressMode.X_AXIS;
 renderer.setLineSweepEnabled(true);
 
 // 动态绘制使用整条线统一的本地 X 轴进度，不会在转角或跨批次时错位。

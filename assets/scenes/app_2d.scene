@@ -1349,6 +1349,7 @@
     "lineRevealDirection": 0,
     "lineRevealDuration": 0.8,
     "enableLineSweep": true,
+    "lineSweepProgressMode": 0,
     "lineSweepColor": {
       "__type__": "cc.Color",
       "r": 255,

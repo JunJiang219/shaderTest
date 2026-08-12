@@ -80,7 +80,7 @@ CCProgram slots-win-fs %{
     vec4 lineSweepConfig;
     // x=绘制方式，y=时长（秒），z=本轮开始时间，w=方向（0 左到右，1 右到左）。
     vec4 lineRevealConfig;
-    // x=整条中奖线最小 X，y=最大 X，其余保留。
+    // x=整条中奖线最小 X，y=最大 X，z=扫光推进方式（0 路径，1 X轴），w=保留。
     vec4 lineRevealBounds;
     // x=本地左边界，y=本地下边界，z=节点宽，w=节点高。
     vec4 localBounds;
@@ -218,16 +218,32 @@ CCProgram slots-win-fs %{
     return top + bottom * (1.0 - top.a);
   }
 
-  // 计算沿整条折线移动的柔和扫光。首尾使用环形距离，循环时不会突然消失。
-  float lineSweepStrength(float distanceFromStart) {
-    if (lineSweepConfig.x < 0.5 || textureConfig.w <= 0.0001) {
+  // GLSL 的 mod 在负数速度下可能返回负数，这里统一转为 [0, length) 区间。
+  float positiveModulo(float value, float lengthValue) {
+    return mod(mod(value, lengthValue) + lengthValue, lengthValue);
+  }
+
+  // 计算柔和扫光；可沿折线路径推进，也可沿本地 X 轴统一推进。
+  float lineSweepStrength(float distanceFromStart, float localX) {
+    if (lineSweepConfig.x < 0.5) {
       return 0.0;
     }
 
-    float totalLength = textureConfig.w;
-    float center = mod(cc_time.x * lineSweepConfig.z, totalLength);
-    float distanceToSweep = abs(distanceFromStart - center);
-    distanceToSweep = min(distanceToSweep, totalLength - distanceToSweep);
+    float coordinate = distanceFromStart;
+    float rangeStart = 0.0;
+    float rangeLength = textureConfig.w;
+    if (lineRevealBounds.z > 0.5) {
+      rangeStart = min(lineRevealBounds.x, lineRevealBounds.y);
+      rangeLength = abs(lineRevealBounds.y - lineRevealBounds.x);
+      coordinate = localX;
+    }
+    if (rangeLength <= 0.0001) {
+      return 0.0;
+    }
+
+    float center = rangeStart + positiveModulo(cc_time.x * lineSweepConfig.z, rangeLength);
+    float distanceToSweep = abs(coordinate - center);
+    distanceToSweep = min(distanceToSweep, rangeLength - distanceToSweep);
 
     float halfWidth = max(lineSweepConfig.y * 0.5, 0.5);
     float softness = clamp(lineSweepConfig.w, 0.01, 1.0);
@@ -286,7 +302,7 @@ CCProgram slots-win-fs %{
     vec4 sampledLine = textureConfig.x > 0.5 ? texture(lineTexture, line.textureUV) : vec4(1.0);
     vec4 sampledFrame = textureConfig.y > 0.5 ? texture(frameTexture, frame.textureUV) : vec4(1.0);
     vec4 linePaint = sampledLine * lineColor;
-    float sweepStrength = lineSweepStrength(line.distanceFromLineStart) * lineSweepColor.a;
+    float sweepStrength = lineSweepStrength(line.distanceFromLineStart, localPosition.x) * lineSweepColor.a;
     linePaint.rgb = mix(linePaint.rgb, lineSweepColor.rgb, clamp(sweepStrength, 0.0, 1.0));
     vec4 lineLayer = makeLayer(linePaint, lineCoverage);
     vec4 frameLayer = makeLayer(sampledFrame * frameColor, frameCoverage);
