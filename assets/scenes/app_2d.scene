@@ -52,7 +52,7 @@
     },
     "autoReleaseAssets": false,
     "_globals": {
-      "__id__": 42
+      "__id__": 44
     },
     "_id": "aafb82df-bd49-4d2f-8fd2-11a7ce4344cf"
   },
@@ -78,16 +78,16 @@
     "_active": true,
     "_components": [
       {
-        "__id__": 38
-      },
-      {
-        "__id__": 39
-      },
-      {
         "__id__": 40
       },
       {
         "__id__": 41
+      },
+      {
+        "__id__": 42
+      },
+      {
+        "__id__": 43
       }
     ],
     "_prefab": null,
@@ -179,7 +179,7 @@
     "_priority": 0,
     "_fov": 45,
     "_fovAxis": 0,
-    "_orthoHeight": 452.7065959059894,
+    "_orthoHeight": 496.359102244389,
     "_near": 0,
     "_far": 2000,
     "_color": {
@@ -1311,21 +1311,12 @@
     },
     "drawMode": 2,
     "layerOrder": 0,
-    "linePoints": [
+    "lines": [
       {
-        "__type__": "cc.Vec2",
-        "x": -400,
-        "y": 0
+        "__id__": 35
       },
       {
-        "__type__": "cc.Vec2",
-        "x": 0,
-        "y": 120
-      },
-      {
-        "__type__": "cc.Vec2",
-        "x": 400,
-        "y": 0
+        "__id__": 36
       }
     ],
     "lineCornerStyle": 1,
@@ -1345,11 +1336,11 @@
       "__expectedType__": "cc.Texture2D"
     },
     "lineTextureRepeat": 128,
-    "lineDrawStyle": 1,
+    "lineDrawStyle": 0,
     "lineRevealDirection": 0,
     "lineRevealDuration": 0.8,
     "enableLineSweep": true,
-    "lineSweepProgressMode": 0,
+    "lineSweepProgressMode": 1,
     "lineSweepColor": {
       "__type__": "cc.Color",
       "r": 255,
@@ -1362,13 +1353,13 @@
     "lineSweepSoftness": 0.65,
     "frames": [
       {
-        "__id__": 35
-      },
-      {
-        "__id__": 36
-      },
-      {
         "__id__": 37
+      },
+      {
+        "__id__": 38
+      },
+      {
+        "__id__": 39
       }
     ],
     "frameWidth": 8,
@@ -1387,6 +1378,51 @@
     "drawLineInsideFrames": true,
     "antialiasSoftness": 1,
     "_id": "2farttVn1I8a5kNLYs0NpP"
+  },
+  {
+    "__type__": "SlotsWinLineConfig",
+    "points": [
+      {
+        "__type__": "cc.Vec2",
+        "x": -320,
+        "y": 120
+      },
+      {
+        "__type__": "cc.Vec2",
+        "x": 0,
+        "y": -80
+      },
+      {
+        "__type__": "cc.Vec2",
+        "x": 320,
+        "y": 120
+      }
+    ]
+  },
+  {
+    "__type__": "SlotsWinLineConfig",
+    "points": [
+      {
+        "__type__": "cc.Vec2",
+        "x": -320,
+        "y": -120
+      },
+      {
+        "__type__": "cc.Vec2",
+        "x": 0,
+        "y": 100
+      },
+      {
+        "__type__": "cc.Vec2",
+        "x": 160,
+        "y": -120
+      },
+      {
+        "__type__": "cc.Vec2",
+        "x": 320,
+        "y": -120
+      }
+    ]
   },
   {
     "__type__": "SlotsWinFrameConfig",
@@ -1516,28 +1552,28 @@
   {
     "__type__": "cc.SceneGlobals",
     "ambient": {
-      "__id__": 43
-    },
-    "shadows": {
-      "__id__": 44
-    },
-    "_skybox": {
       "__id__": 45
     },
-    "fog": {
+    "shadows": {
       "__id__": 46
     },
-    "octree": {
+    "_skybox": {
       "__id__": 47
     },
-    "skin": {
+    "fog": {
       "__id__": 48
     },
-    "lightProbeInfo": {
+    "octree": {
       "__id__": 49
     },
-    "postSettings": {
+    "skin": {
       "__id__": 50
+    },
+    "lightProbeInfo": {
+      "__id__": 51
+    },
+    "postSettings": {
+      "__id__": 52
     },
     "bakedWithStationaryMainLight": false,
     "bakedWithHighpLightmap": false

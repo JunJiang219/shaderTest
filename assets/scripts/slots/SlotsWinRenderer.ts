@@ -69,6 +69,13 @@ export enum SlotsWinLineSweepProgressMode {
     X_AXIS = 1,
 }
 
+/** 一条中奖线；所有位置均为 SlotsWinRenderer 节点本地像素坐标。 */
+@ccclass('SlotsWinLineConfig')
+export class SlotsWinLineConfig {
+    @property({ type: [Vec2], tooltip: '按数组顺序依次连接的折线点' })
+    points: Vec2[] = [];
+}
+
 export enum SlotsWinFrameShape {
     RECTANGLE = 0,
     CIRCLE = 1,
@@ -139,8 +146,8 @@ export class SlotsWinRenderer extends Component {
     @property({ type: Enum(SlotsWinLayerOrder), tooltip: '线和框重叠时谁显示在上面' })
     layerOrder: SlotsWinLayerOrder = SlotsWinLayerOrder.FRAME_ABOVE_LINE;
 
-    @property({ type: [Vec2], tooltip: '折线节点的本地坐标，按数组顺序依次连接；总数不设上限' })
-    linePoints: Vec2[] = [];
+    @property({ type: [SlotsWinLineConfig], tooltip: '中奖线列表；1 项为单线，多项为多线，总数不设上限' })
+    lines: SlotsWinLineConfig[] = [];
 
     @property({ type: Enum(SlotsWinLineCornerStyle), tooltip: '折线转折样式：直接转折或圆弧转折' })
     lineCornerStyle: SlotsWinLineCornerStyle = SlotsWinLineCornerStyle.SHARP;
@@ -255,9 +262,13 @@ export class SlotsWinRenderer extends Component {
         this.syncNow();
     }
 
-    /** 运行时替换单条中奖线的本地坐标点，点数不设上限。 */
-    public setLinePoints(points: ReadonlyArray<Vec2>): void {
-        this.linePoints = points.map((point) => point.clone());
+    /** 运行时完整替换中奖线列表；1 条即单线，传空数组可清除全部中奖线。 */
+    public setLines(lines: ReadonlyArray<ReadonlyArray<Vec2>>): void {
+        this.lines = lines.map((points) => {
+            const config = new SlotsWinLineConfig();
+            config.points = points.map((point) => point.clone());
+            return config;
+        });
         if (this.lineDrawStyle === SlotsWinLineDrawStyle.X_AXIS_REVEAL) {
             this.resetLineRevealTime();
         }
@@ -329,21 +340,29 @@ export class SlotsWinRenderer extends Component {
             : [...lineBatches, ...frameBatches];
     }
 
-    /** 只生成一次圆弧点和总长度，避免批次较多时重复计算。 */
+    /** 为每条线独立生成路径批次，并共用全局 X 范围。 */
     private buildLineBatches(): LineBatch[] {
-        const renderPoints = this.buildRenderableLinePoints();
-        const totalLength = this.calculateLineLength(renderPoints);
-        const bounds = this.calculateLineXBounds(renderPoints);
-        return this.chunkSegments(
-            this.buildVisibleSegments(renderPoints),
-            totalLength,
-            bounds.min,
-            bounds.max,
-        );
+        const renderPointGroups = this.lines
+            .map((line) => line.points)
+            .map((points) => this.buildRenderableLinePoints(points))
+            .filter((points) => points.length >= 2);
+        const bounds = this.calculateLinesXBounds(renderPointGroups);
+        const batches: LineBatch[] = [];
+
+        for (const renderPoints of renderPointGroups) {
+            batches.push(...this.chunkSegments(
+                this.buildVisibleSegments(renderPoints),
+                this.calculateLineLength(renderPoints),
+                bounds.min,
+                bounds.max,
+            ));
+        }
+        return batches;
     }
 
     private shouldDrawLine(): boolean {
-        return this.drawMode !== SlotsWinDrawMode.FRAME_ONLY && this.linePoints.length >= 2;
+        return this.drawMode !== SlotsWinDrawMode.FRAME_ONLY
+            && this.lines.some((line) => line.points.length >= 2);
     }
 
     private shouldDrawFrame(): boolean {
@@ -386,17 +405,27 @@ export class SlotsWinRenderer extends Component {
         return length;
     }
 
-    /** 动态绘制只看整条线的全局 X 范围，不按线段长度分别推进。 */
-    private calculateLineXBounds(points: ReadonlyArray<Vec2>): { min: number; max: number } {
-        if (points.length === 0) {
+    /** 多线动态绘制和 X 轴扫光共用同一个 X 范围。 */
+    private calculateLinesXBounds(pointGroups: ReadonlyArray<ReadonlyArray<Vec2>>): { min: number; max: number } {
+        let hasPoint = false;
+        let min = 0;
+        let max = 0;
+        for (const points of pointGroups) {
+            for (const point of points) {
+                if (!hasPoint) {
+                    min = point.x;
+                    max = point.x;
+                    hasPoint = true;
+                } else {
+                    min = Math.min(min, point.x);
+                    max = Math.max(max, point.x);
+                }
+            }
+        }
+        if (!hasPoint) {
             return { min: 0, max: 0 };
         }
-        let min = points[0].x;
-        let max = points[0].x;
-        for (let index = 1; index < points.length; index++) {
-            min = Math.min(min, points[index].x);
-            max = Math.max(max, points[index].x);
-        }
+
         // 线段使用圆头，需要把半个线宽和抗锯齿边缘算进范围，100% 时才会完整显示。
         const padding = Math.max(this.lineWidth, 0) * 0.5 + Math.max(this.antialiasSoftness, 0.5);
         return { min: min - padding, max: max + padding };
@@ -404,10 +433,10 @@ export class SlotsWinRenderer extends Component {
 
     /**
      * 根据转折配置生成真正参与绘制的点。
-     * 圆弧只增加渲染线段，原始 linePoints 不会被修改。
+     * 圆弧只增加渲染线段，原始配置点不会被修改。
      */
-    private buildRenderableLinePoints(): Vec2[] {
-        const points = this.removeDuplicateLinePoints();
+    private buildRenderableLinePoints(sourcePoints: ReadonlyArray<Vec2>): Vec2[] {
+        const points = this.removeDuplicateLinePoints(sourcePoints);
         if (this.lineCornerStyle !== SlotsWinLineCornerStyle.ROUNDED
             || this.lineCornerRadius <= CLIP_EPSILON
             || points.length < 3) {
@@ -423,9 +452,9 @@ export class SlotsWinRenderer extends Component {
     }
 
     /** 连续重复点没有长度，先移除，避免圆弧方向计算出现除零。 */
-    private removeDuplicateLinePoints(): Vec2[] {
+    private removeDuplicateLinePoints(sourcePoints: ReadonlyArray<Vec2>): Vec2[] {
         const result: Vec2[] = [];
-        for (const point of this.linePoints) {
+        for (const point of sourcePoints) {
             this.appendUniquePoint(result, point);
         }
         return result;

@@ -41,14 +41,20 @@ export class App2d extends Component {
     }
 
     protected start(): void {
-        // 坐标均相对 renderer 所在节点的锚点，单位是像素。
-        // this.renderer.setLinePoints([
-        //     new Vec2(-400, 0),
-        //     new Vec2(0, 120),
-        //     new Vec2(400, 0),
-        // ]);
 
-        // this.renderer.syncNow();
+        this.renderer.setLines([
+            [
+                new Vec2(-320, 120),
+                new Vec2(0, -80),
+                new Vec2(320, 120),
+            ],
+            [
+                new Vec2(-320, -120),
+                new Vec2(0, 100),
+                new Vec2(320, -120),
+            ],
+        ]);
+        this.renderer.syncNow();
     }
 
     onDisable() {
@@ -63,10 +69,10 @@ export class App2d extends Component {
         const nodeTag = parseInt(nameArr[nameArr.length - 1]);
         switch (nodeTag) {
             case EBtnTag.LineReveal_0:
-                this.drawLine(SlotsWinLineDrawStyle.COMPLETE);
+                this.renderer.showCompleteLine();
                 break;
             case EBtnTag.LineReveal_1:
-                this.drawLine(SlotsWinLineDrawStyle.X_AXIS_REVEAL);
+                this.renderer.playLineReveal();
                 break;
             default:
                 console.warn("未知按钮");
@@ -89,21 +95,6 @@ export class App2d extends Component {
             btnNode.getComponentInChildren(Label).string = element.text;
 
             this._btnsMap.set(index, btnNode);
-        }
-    }
-
-    private drawLine(style: SlotsWinLineDrawStyle) {
-        this.renderer.lineDrawStyle = SlotsWinLineDrawStyle.X_AXIS_REVEAL;
-
-        switch (style) {
-            case SlotsWinLineDrawStyle.COMPLETE:
-                this.renderer.showCompleteLine();
-                break;
-            case SlotsWinLineDrawStyle.X_AXIS_REVEAL:
-                this.renderer.playLineReveal();
-                break;
-            default:
-                break;
         }
     }
 }

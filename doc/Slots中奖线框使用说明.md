@@ -6,7 +6,7 @@
 2. 新建一个 UI 节点，让它的 `UITransform` 尺寸覆盖整个 slots 中奖显示区域。
 3. 给节点添加 `SlotsWinRenderer`。它要求同节点有 `Sprite`，编辑器会自动补上。
 4. 将 `assets/resources/effects/slots-win-line-frame.effect` 拖到组件的 `Effect Asset`。不拖也可以，运行时会从 `resources` 自动加载；拖入后可直接看到编辑器预览。
-5. 填写 `Line Points` 和 `Frames`。所有位置、线宽、框宽、矩形宽高、圆半径都按此节点的本地像素坐标填写。
+5. 填写 `Lines`，每个元素的 `Points` 表示一条中奖线：1 项就是单线，多项就是多线。再按需填写 `Frames`。所有位置、线宽、框宽、矩形宽高、圆半径都按此节点的本地像素坐标填写。
 
 坐标原点就是节点锚点。例如默认锚点 `(0.5, 0.5)` 时，节点中心是 `(0, 0)`，右上为正，左下为负。
 
@@ -23,6 +23,7 @@ flowchart LR
 - `Draw Mode`：只画线、只画框、同时画线框。
 - `Layer Order`：控制线与框重叠时的上下关系。
 - `Draw Line Inside Frames`：关闭后，中奖框内部的中奖线会被平滑裁掉。
+- `Lines`：统一的中奖线列表；1 项为单线，多项为多线。每条线独立计算路径长度，但共用颜色、宽度、纹理和动画样式。
 - `Line Corner Style`：`SHARP` 为无弧度直接转折，`ROUNDED` 为圆弧转折。
 - `Line Corner Radius`：圆弧转角半径，单位是像素；相邻线段过短时会自动缩小，避免圆弧互相穿过。
 - `Line Corner Segments`：每个圆弧使用的细分线段数，默认 `8` 已能满足大部分效果；需要更圆滑时再增加。
@@ -55,12 +56,18 @@ import {
 const renderer = node.getComponent(SlotsWinRenderer)!;
 
 // 坐标均相对 renderer 所在节点的锚点，单位是像素。
-renderer.setLinePoints([
-    new Vec2(-320, 120),
-    new Vec2(-160, -80),
-    new Vec2(0, 80),
-    new Vec2(160, -80),
-    new Vec2(320, 120),
+// 一项就是单条中奖线，多项就是多条中奖线；调用会完整替换当前列表。
+renderer.setLines([
+    [
+        new Vec2(-320, 120),
+        new Vec2(0, -80),
+        new Vec2(320, 120),
+    ],
+    [
+        new Vec2(-320, -120),
+        new Vec2(0, 100),
+        new Vec2(320, -120),
+    ],
 ]);
 
 // 开启圆弧转折；切回 SHARP 即可恢复无弧度转折。
@@ -81,4 +88,4 @@ renderer.playLineReveal();
 renderer.showCompleteLine();
 ```
 
-直接修改组件公开字段后，调用一次 `syncNow()` 即可上传。组件对折线点和框的总数不设上限；内部会自动拆成多个兼容 WebGL1 的小批次。数据越多 draw call 越多，例如 100 个线段约为 7 批、100 个框约为 7 批。
+直接修改组件公开字段后，调用一次 `syncNow()` 即可上传。组件对中奖线数量、折线点和框的总数不设上限；内部会自动拆成多个兼容 WebGL1 的小批次。为了让每条线的路径纹理和动画独立，多条线之间不会合并批次；每条线每 16 个线段约占一个 draw call。
