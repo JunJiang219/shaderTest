@@ -1,4 +1,4 @@
-import { _decorator, Button, Component, EventTouch, instantiate, Label, Layout, Node, Sprite, Vec2 } from 'cc';
+import { _decorator, Button, Color, Component, EventTouch, instantiate, Label, Layout, Node, Sprite, Vec2 } from 'cc';
 import { Blur } from './Blur';
 import { SlotsWinDrawMode, SlotsWinFrameShape, SlotsWinLayerOrder, SlotsWinLineCornerStyle, SlotsWinLineDrawStyle, SlotsWinRenderer } from './slots/SlotsWinRenderer';
 const { ccclass, property } = _decorator;
@@ -17,6 +17,8 @@ enum EBtnTag {
     Sweep_1,          // 扫光
     Sharp,            // 折角
     Round,            // 圆角
+    SolidColor,       // 纯色线框
+    UseTexture,       // 线框使用纹理
     MaxTag,
 }
 
@@ -34,6 +36,8 @@ const btnsInfo = {
     [EBtnTag.Sweep_1]: { text: "扫光" },
     [EBtnTag.Sharp]: { text: "折角" },
     [EBtnTag.Round]: { text: "圆角" },
+    [EBtnTag.SolidColor]: { text: "纯色线框" },
+    [EBtnTag.UseTexture]: { text: "纹理线框" },
 }
 
 
@@ -180,6 +184,18 @@ export class App2d extends Component {
                 break;
             case EBtnTag.Round:
                 this.renderer.lineCornerStyle = SlotsWinLineCornerStyle.ROUNDED;
+                break;
+            case EBtnTag.SolidColor:
+                this.renderer.useLineTexture = false;
+                this.renderer.useFrameTexture = false;
+                this.renderer.lineColor = new Color(255, 200, 31, 255);
+                this.renderer.frameColor = new Color(255, 77, 20, 255);
+                break;
+            case EBtnTag.UseTexture:
+                this.renderer.useLineTexture = true;
+                this.renderer.useFrameTexture = true;
+                this.renderer.lineColor = new Color(255, 255, 255, 255);
+                this.renderer.frameColor = new Color(255, 255, 255, 255);
                 break;
             default:
                 console.warn("未知按钮");
